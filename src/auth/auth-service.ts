@@ -11,7 +11,7 @@ import {
   storagePaths
 } from "../storage.js";
 import { closeBrowserSession, gotoApp, openBrowserSession, readSessionStatusFromPage } from "../browser.js";
-import { probeSessionOverHttp } from "../transport/portal-http-client.js";
+import { probeSessionOverHttp, probeSessionWithContext } from "../transport/portal-http-client.js";
 import { TraceRecorder } from "../transport/trace-recorder.js";
 import type { PortalProfile, SessionStatus } from "../types.js";
 
@@ -32,8 +32,7 @@ export class AuthService {
     try {
       logger.info("Browser opened for interactive login. Complete the login in the browser window.");
       await gotoApp(session.page, nextProfile);
-      await waitForSuccessfulLogin(session.page, timeoutMs);
-      const status = await readSessionStatusFromPage(session.page);
+      const status = await waitForSuccessfulLogin(session.page, nextProfile, timeoutMs);
       if (!status.valid) {
         throw new CliError("Login completed but no authenticated session marker was found.", EXIT_CODES.AUTH_INVALID);
       }
@@ -99,14 +98,38 @@ export class AuthService {
   }
 }
 
-async function waitForSuccessfulLogin(page: import("playwright").Page, timeoutMs: number): Promise<void> {
+async function waitForSuccessfulLogin(
+  page: import("playwright").Page,
+  profile: PortalProfile,
+  timeoutMs: number
+): Promise<SessionStatus> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const status = await readSessionStatusFromPage(page);
-    if (status.valid) {
-      return;
+    const pageStatus = await readSessionStatusFromPage(page).catch(() => ({
+      valid: false,
+      source: "none"
+    } satisfies SessionStatus));
+    if (pageStatus.valid) {
+      return pageStatus;
     }
-    await page.waitForTimeout(1_000);
+
+    const httpStatus = await probeSessionWithContext(profile, page.context().request);
+    if (httpStatus.valid) {
+      return httpStatus;
+    }
+
+    try {
+      await page.waitForTimeout(1_000);
+    } catch {
+      const finalHttpStatus = await probeSessionWithContext(profile, page.context().request);
+      if (finalHttpStatus.valid) {
+        return finalHttpStatus;
+      }
+      throw new CliError(
+        "Login browser was closed before the session could be verified.",
+        EXIT_CODES.AUTH_INVALID
+      );
+    }
   }
 
   throw new CliError(
