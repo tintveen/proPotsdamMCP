@@ -107,13 +107,36 @@ async function waitForSuccessfulLogin(
   while (Date.now() - started < timeoutMs) {
     const pageStatus = await readSessionStatusFromPage(page).catch(() => ({
       valid: false,
+      userId: undefined,
+      userFullName: undefined,
       source: "none"
     } satisfies SessionStatus));
+    logger.info(
+      {
+        stage: "login-wait",
+        elapsedMs: Date.now() - started,
+        pageUrl: page.url(),
+        pageValid: pageStatus.valid,
+        pageUserId: pageStatus.userId,
+        pageUserFullName: pageStatus.userFullName
+      },
+      "Waiting for login success signal from portal page."
+    );
     if (pageStatus.valid) {
       return pageStatus;
     }
 
     const httpStatus = await probeSessionWithContext(profile, page.context().request);
+    logger.info(
+      {
+        stage: "login-wait",
+        elapsedMs: Date.now() - started,
+        httpValid: httpStatus.valid,
+        httpUserId: httpStatus.userId,
+        httpUserFullName: httpStatus.userFullName
+      },
+      "Checked portal session over HTTP."
+    );
     if (httpStatus.valid) {
       return httpStatus;
     }
