@@ -1,0 +1,39 @@
+{
+  "name": "propotsdam-cli",
+  "version": "0.1.0",
+  "description": "CLI for interacting with the ProPotsdam customer portal",
+  "type": "module",
+  "bin": {
+    "propotsdam": "./dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "propotsdam",
+    "cli",
+    "playwright"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "commander": "^14.0.1",
+    "env-paths": "^3.0.0",
+    "fast-xml-parser": "^5.2.5",
+    "pino": "^10.0.0",
+    "playwright": "^1.55.0",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
