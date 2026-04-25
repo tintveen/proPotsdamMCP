@@ -1,114 +1,49 @@
 # proPotsdamMCP
 
-![ProPotsdam MCP banner](proPotsdamMCPBanner.png)
-
-[![CI](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml)
-[![Dependency Audit](https://github.com/tintveen/proPotsdamMCP/actions/workflows/dependency-audit.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/dependency-audit.yml)
-[![Security Policy](https://img.shields.io/badge/security-policy-green)](SECURITY.md)
-![Credentials: macOS Keychain](https://img.shields.io/badge/credentials-macOS%20Keychain-blue)
-![Data: local first](https://img.shields.io/badge/data-local%20first-blue)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
-
 Unofficial local MCP server for the ProPotsdam/Easysquare customer portal.
 
-It runs on your machine, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to MCP clients through read-first tools. Limited write support is guarded by an explicit confirmation flow and should be treated as experimental.
+It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Limited write support is guarded by an explicit confirmation flow and should be treated as experimental.
+
+[![CI](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+
+## Install
+
+Add it to Codex:
 
 ```bash
-npm install
-npm run build
-npm run auth:set
-node dist/cli.js serve
+codex mcp add propotsdam -- npx -y propotsdam-mcp serve
 ```
 
-## What It Does
-
-- Authenticates against the ProPotsdam/Easysquare portal with credentials stored locally.
-- Discovers visible portal services and readable account areas.
-- Reads inbox items and portal records exposed by the current account.
-- Prepares portal action drafts for review.
-- Supports a limited confirmation-based commit flow for known safe write actions.
-
-This project is macOS-first because it uses Apple Keychain through `keytar`.
-
-## Requirements
-
-- Node.js 22 or newer
-- npm
-- macOS Keychain access
-- A ProPotsdam/Easysquare portal account
-
-## Setup
-
-Install dependencies and build the CLI:
+Store your portal credentials once:
 
 ```bash
-npm install
-npm run build
+npx -y propotsdam-mcp auth set
 ```
 
-Store credentials:
+Requirements: Node.js 22+, npm/npx, macOS Keychain, and a ProPotsdam/Easysquare account.
+
+## Commands
 
 ```bash
-npm run auth:set
+npx -y propotsdam-mcp --help
+npx -y propotsdam-mcp discover --json
+npx -y propotsdam-mcp actions --json
 ```
 
-The command asks for username and password. For the normal ProPotsdam portal, no base URL is needed. Advanced/debug usage can override it:
+For the normal ProPotsdam portal, credential setup does not need a base URL. Advanced/debug usage can override it:
 
 ```bash
-npm run auth:set -- --base-url https://portal.example.test
+npx -y propotsdam-mcp auth set --base-url https://portal.example.test
 ```
 
-The password is stored in the macOS Keychain under the service name `propotsdam-mcp`. Local config, session cookies, traces, confirmations, and MCP-created exports live here:
+Local config, session cookies, traces, confirmations, and MCP-created exports live under:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/
 ```
 
-## Run The MCP Server
-
-From a local checkout:
-
-```bash
-node dist/cli.js serve
-```
-
-After linking or installing the package as a CLI, the binary is:
-
-```bash
-propotsdam-mcp serve
-```
-
-The server uses MCP over stdio, so configure your MCP client to run one of those commands.
-
-## Discovery
-
-Generate a capability report for the configured account:
-
-```bash
-npm run discover -- --json
-```
-
-The report describes visible portal services, recognized areas, boxlist availability, item counts, and readable portal data. A redacted trace is also written under:
-
-```text
-~/Library/Application Support/propotsdam-mcp/traces/
-```
-
-## Portal Actions
-
-Inspect action-like portal surfaces:
-
-```bash
-npm run build
-node dist/cli.js actions --json
-```
-
-Action handling is intentionally conservative. `propotsdam_prepare_portal_action` creates a local draft, accepts only known editable fields, and reports locked or unknown fields as validation problems.
-
-Real portal writes are limited to supported actions such as `Meine Daten` / `save_partner`. They require two MCP steps: request a short-lived confirmation with a diff, then commit with the returned confirmation ID. Unsupported actions remain prepare-only.
-
-<details>
-<summary>MCP tools</summary>
+## Tools
 
 - `propotsdam_auth_status`
 - `propotsdam_auth_login`
@@ -125,40 +60,28 @@ Real portal writes are limited to supported actions such as `Meine Daten` / `sav
 - `propotsdam_request_portal_action_commit`
 - `propotsdam_commit_portal_action`
 
-</details>
-
-## Security Notes
-
-Passwords are stored in the macOS Keychain; this project does not store portal passwords in repo files, config files, logs, traces, or exports.
-
-Do not share portal credentials, session cookies, CSRF tokens, raw traces, screenshots with personal data, or exported account data in public issues.
-
-See [SECURITY.md](SECURITY.md) and [docs/security-check.md](docs/security-check.md) for the reporting policy and the pre-publication security checklist.
-
 ## Development
 
 ```bash
-npm run check
+npm install
 npm run build
-npm test
+npm run auth:set
+node dist/cli.js serve
 ```
 
-Live read tests are opt-in and require a real configured account:
+Before publishing:
 
 ```bash
-PROPPOTSDAM_LIVE_TEST=1 npm run test:live
+npm run release:check
 ```
 
-Before publishing or making the repository public, run:
+`npm pack` and `npm publish` run `npm run build` first through `prepack`, so the published CLI includes fresh `dist/` output.
 
-```bash
-npm run check
-npm test
-npm audit
-npm audit --omit=dev
-git diff --check
-npm pack --dry-run
-```
+## Security
+
+Passwords are stored in the macOS Keychain under the `propotsdam-mcp` service. Do not share portal credentials, session cookies, CSRF tokens, raw traces, screenshots with personal data, or exported account data in public issues.
+
+See [SECURITY.md](SECURITY.md) and [docs/security-check.md](docs/security-check.md).
 
 ## License
 

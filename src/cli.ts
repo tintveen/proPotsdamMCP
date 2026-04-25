@@ -36,6 +36,10 @@ export async function runCli(
   try {
     const [, , command, subcommand] = argv;
 
+    if (command === "--help" || command === "-h" || command === "help") {
+      io.write(help());
+      return 0;
+    }
     if (!command || command === "serve") {
       const server = createServer();
       await server.connect(new StdioServerTransport());

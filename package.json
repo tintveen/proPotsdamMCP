@@ -4,12 +4,11 @@
   "description": "Local MCP server for the ProPotsdam customer portal",
   "type": "module",
   "bin": {
-    "propotsdam-mcp": "./dist/cli.js"
+    "propotsdam-mcp": "dist/cli.js"
   },
   "files": [
     "dist/",
     "docs/security-check.md",
-    "proPotsdamMCPBanner.png",
     "README.md",
     "LICENSE",
     "SECURITY.md"
@@ -29,6 +28,8 @@
     "discover": "node dist/cli.js discover",
     "actions": "node dist/cli.js actions",
     "dev": "tsx src/index.ts",
+    "prepack": "npm run build",
+    "release:check": "npm run check && npm test && npm run build && npm pack --dry-run",
     "test": "vitest run",
     "test:live": "PROPPOTSDAM_LIVE_TEST=1 vitest run tests/live-read-pass.test.ts",
     "test:watch": "vitest"

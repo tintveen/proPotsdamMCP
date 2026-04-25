@@ -1,6 +1,38 @@
 import { describe, expect, it, vi } from "vitest";
 
 describe("CLI", () => {
+  it("prints help with a zero exit code", async () => {
+    const { runCli } = await import("../src/cli.js");
+    let stdout = "";
+
+    const exitCode = await runCli(
+      ["node", "propotsdam-mcp", "--help"],
+      {
+        write: (text: string) => {
+          stdout += text;
+        },
+        question: async () => {
+          throw new Error("question should not be called");
+        },
+        questionHidden: async () => {
+          throw new Error("questionHidden should not be called");
+        }
+      },
+      {
+        discoverCapabilities: async () => {
+          throw new Error("discoverCapabilities should not be called");
+        },
+        discoverWriteActions: async () => {
+          throw new Error("discoverWriteActions should not be called");
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("propotsdam-mcp serve");
+    expect(stdout).toContain("propotsdam-mcp auth set");
+  });
+
   it("prints discover capability maps as JSON", async () => {
     const previousExitCode = process.exitCode;
     const { runCli } = await import("../src/cli.js");
