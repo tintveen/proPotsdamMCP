@@ -8,7 +8,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createServer } from "./mcp.js";
 import { configureCredentials, PortalClient } from "./portal/portal-client.js";
 import { loadConfig, normalizeBaseUrl, paths } from "./storage.js";
-import type { CapabilityMap, PortalConfig } from "./types.js";
+import type { CapabilityMap, PortalActionMap, PortalConfig } from "./types.js";
 
 export interface CliIo {
   write(text: string): void;
@@ -18,6 +18,7 @@ export interface CliIo {
 
 export interface CliPortalClient {
   discoverCapabilities(): Promise<CapabilityMap>;
+  discoverWriteActions(): Promise<PortalActionMap>;
 }
 
 export interface CliDeps {
@@ -51,6 +52,11 @@ export async function runCli(
     }
     if (command === "discover") {
       const report = await client.discoverCapabilities();
+      io.write(`${JSON.stringify(report, null, 2)}\n`);
+      return 0;
+    }
+    if (command === "actions") {
+      const report = await client.discoverWriteActions();
       io.write(`${JSON.stringify(report, null, 2)}\n`);
       return 0;
     }
@@ -144,6 +150,7 @@ function help(): string {
   propotsdam-mcp serve
   propotsdam-mcp auth set
   propotsdam-mcp discover --json
+  propotsdam-mcp actions --json
   propotsdam-mcp config show
 `;
 }

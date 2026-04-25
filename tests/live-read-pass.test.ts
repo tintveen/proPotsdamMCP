@@ -6,8 +6,8 @@ import { loadConfig, paths } from "../src/storage.js";
 
 const liveEnabled = process.env.PROPPOTSDAM_LIVE_TEST === "1";
 
-describe.skipIf(!liveEnabled)("live ProPotsdam read pass", () => {
-  it("discovers account capabilities and exercises all read/download tools", async () => {
+describe.skipIf(!liveEnabled)("live ProPotsdam read and prepare-only pass", () => {
+  it("discovers account capabilities and exercises read-only plus prepare-only tools", async () => {
     const config = await loadConfig();
     if (!config.username) {
       console.warn("Skipping live test because credentials are not configured.");
@@ -33,37 +33,32 @@ describe.skipIf(!liveEnabled)("live ProPotsdam read pass", () => {
       expect(detail.id).toBe(item.id);
     }
 
-    const documents = await client.listDocuments();
     const records = await client.listPortalRecords();
     for (const item of records.items) {
       const detail = await client.getPortalRecord(item.id);
       expect(detail.id).toBe(item.id);
     }
 
-    const candidates = await client.listDownloadCandidates();
-    const tooManyDocuments = candidates.safe.length > 100;
-    const estimatedTooLarge = capabilities.safety.estimatedDownloadBytes !== undefined && capabilities.safety.estimatedDownloadBytes > 1_000_000_000;
-    const downloads: Array<{ id: string; ok: true; path: string } | { id: string; ok: false; error: string }> = [];
-    if (!tooManyDocuments && !estimatedTooLarge) {
-      for (const candidate of candidates.safe) {
-        try {
-          const result = await client.downloadCandidate(candidate.id);
-          expect(result.ok).toBe(true);
-          expect(result.path.startsWith(config.downloadDir)).toBe(true);
-          downloads.push({ id: candidate.id, ok: true, path: result.path });
-        } catch (error) {
-          downloads.push({
-            id: candidate.id,
-            ok: false,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
+    const actionMap = await client.discoverWriteActions();
+    const actions = await client.listPortalActions();
+    expect(actions.items.length).toBe(actionMap.totals.actionCount);
+    const firstAction = actions.items[0];
+    const firstActionDetail = firstAction ? await client.getPortalAction(firstAction.id) : undefined;
+    const firstPreparable = actions.items.find((action) => action.preparable);
+    const prepared = firstPreparable
+      ? await client.preparePortalAction(firstPreparable.id, Object.fromEntries(
+        firstPreparable.fields
+          .filter((field) => field.required && !field.hidden)
+          .map((field) => [field.name, "LIVE_TEST_PLACEHOLDER"])
+      ))
+      : undefined;
+    if (prepared) {
+      expect(prepared.preparedOnly).toBe(true);
     }
 
     await mkdir(paths.tracesDir, { recursive: true });
     const artifactPath = path.join(paths.tracesDir, `live-read-pass-${Date.now()}.json`);
-    await writeFile(artifactPath, `${JSON.stringify({ status, capabilities, inbox, documents, records, candidates, downloads }, null, 2)}\n`);
+    await writeFile(artifactPath, `${JSON.stringify({ status, capabilities, inbox, records, actionMap, actions, firstActionDetail, prepared }, null, 2)}\n`);
     expect(artifactPath).toContain("live-read-pass");
   }, 600_000);
 });

@@ -42,21 +42,6 @@ export class CookieSession {
     return this.request(pathOrUrl, { ...init, body, method: "POST" });
   }
 
-  async download(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse<Buffer>> {
-    const response = await this.requestRaw(pathOrUrl, { ...init, method: init.method ?? "GET" });
-    await this.storeCookies(response, this.buildUrl(pathOrUrl));
-    this.captureCsrf(response);
-    const body = Buffer.from(await response.arrayBuffer());
-    return {
-      status: response.status,
-      ok: response.ok,
-      url: response.url,
-      headers: response.headers,
-      body,
-      contentType: response.headers.get("content-type") ?? undefined
-    };
-  }
-
   async request(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse> {
     const response = await this.requestRaw(pathOrUrl, init);
     await this.storeCookies(response, this.buildUrl(pathOrUrl));

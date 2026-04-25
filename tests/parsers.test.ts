@@ -50,7 +50,6 @@ describe("portal parsers", () => {
     expect(documents[0]).toMatchObject({
       id: "DOC-1",
       title: "Mietbescheinigung.pdf",
-      downloadable: true,
       resourceId: "res-1"
     });
   });

@@ -6,7 +6,7 @@ import { redactSecrets } from "./utils/redact.js";
 
 export function createServer(client = new PortalClient()): McpServer {
   const server = new McpServer({
-    name: "propotsdam-mcp",
+    name: "ProPotsdam MCP",
     version: "0.1.0"
   });
 
@@ -23,8 +23,12 @@ export function createServer(client = new PortalClient()): McpServer {
   }, async () => client.logout());
 
   registerJsonTool(server, "propotsdam_discover_capabilities", {
-    description: "Discover read and download capabilities exposed by the authenticated ProPotsdam account."
+    description: "Discover readable portal data exposed by the authenticated ProPotsdam account."
   }, async () => client.discoverCapabilities());
+
+  registerJsonTool(server, "propotsdam_discover_write_actions", {
+    description: "Discover ProPotsdam portal actions as prepare-only draftable metadata."
+  }, async () => client.discoverWriteActions());
 
   registerJsonTool(server, "propotsdam_list_inbox", {
     description: "List ProPotsdam portal inbox messages."
@@ -37,12 +41,8 @@ export function createServer(client = new PortalClient()): McpServer {
     }
   }, async ({ id }) => wrapTool(() => client.getInboxItem(id)));
 
-  registerJsonTool(server, "propotsdam_list_documents", {
-    description: "List ProPotsdam portal documents."
-  }, async () => client.listDocuments());
-
   server.registerTool("propotsdam_list_portal_records", {
-    description: "List read-only generic ProPotsdam portal records by service id or xuclass.",
+    description: "List readable ProPotsdam portal records by service id or xuclass.",
     inputSchema: {
       serviceId: z.string().min(1).optional(),
       xuclass: z.string().min(1).optional()
@@ -50,29 +50,52 @@ export function createServer(client = new PortalClient()): McpServer {
   }, async (input) => wrapTool(() => client.listPortalRecords(input)));
 
   server.registerTool("propotsdam_get_portal_record", {
-    description: "Read one generic ProPotsdam portal record by id.",
+    description: "Read one ProPotsdam portal record by id.",
     inputSchema: {
       id: z.string().min(1)
     }
   }, async ({ id }) => wrapTool(() => client.getPortalRecord(id)));
 
-  registerJsonTool(server, "propotsdam_list_download_candidates", {
-    description: "List safe and skipped ProPotsdam download candidates across documents and generic records."
-  }, async () => client.listDownloadCandidates());
+  server.registerTool("propotsdam_list_portal_actions", {
+    description: "List ProPotsdam portal actions that can be inspected or prepared as local drafts.",
+    inputSchema: {
+      serviceId: z.string().min(1).optional(),
+      xuclass: z.string().min(1).optional(),
+      actionKind: z.enum(["form", "portal_action", "read_confirmation", "external_link", "navigation", "ambiguous"]).optional(),
+      source: z.enum(["boxlist", "detail"]).optional(),
+      recordId: z.string().min(1).optional()
+    }
+  }, async (input) => wrapTool(() => client.listPortalActions(input)));
 
-  server.registerTool("propotsdam_download_candidate", {
-    description: "Download one safe ProPotsdam candidate by id into the configured local safe folder.",
+  server.registerTool("propotsdam_get_portal_action", {
+    description: "Read one ProPotsdam portal action model by id.",
     inputSchema: {
       id: z.string().min(1)
     }
-  }, async ({ id }) => wrapTool(() => client.downloadCandidate(id)));
+  }, async ({ id }) => wrapTool(() => client.getPortalAction(id)));
 
-  server.registerTool("propotsdam_download_document", {
-    description: "Download one ProPotsdam portal document by id into the configured local safe folder.",
+  server.registerTool("propotsdam_prepare_portal_action", {
+    description: "Create a review-only local draft for a ProPotsdam portal action without sending it.",
     inputSchema: {
-      id: z.string().min(1)
+      id: z.string().min(1),
+      values: z.record(z.string(), z.unknown()).optional()
     }
-  }, async ({ id }) => wrapTool(() => client.downloadDocument(id)));
+  }, async ({ id, values }) => wrapTool(() => client.preparePortalAction(id, values ?? {})));
+
+  server.registerTool("propotsdam_request_portal_action_commit", {
+    description: "Create a short-lived confirmation for committing a supported ProPotsdam portal action.",
+    inputSchema: {
+      actionId: z.string().min(1),
+      values: z.record(z.string(), z.unknown()).optional()
+    }
+  }, async ({ actionId, values }) => wrapTool(() => client.requestPortalActionCommit(actionId, values ?? {})));
+
+  server.registerTool("propotsdam_commit_portal_action", {
+    description: "Commit a previously confirmed ProPotsdam portal action by confirmation id.",
+    inputSchema: {
+      confirmationId: z.string().min(1)
+    }
+  }, async ({ confirmationId }) => wrapTool(() => client.commitPortalAction(confirmationId)));
 
   return server;
 }

@@ -9,5 +9,6 @@ describe("package scripts", () => {
 
     expect(pkg.scripts["auth:set"]).toBe("node dist/cli.js auth set");
     expect(pkg.scripts.discover).toBe("node dist/cli.js discover");
+    expect(pkg.scripts.actions).toBe("node dist/cli.js actions");
   });
 });

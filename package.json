@@ -11,6 +11,7 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "auth:set": "node dist/cli.js auth set",
     "discover": "node dist/cli.js discover",
+    "actions": "node dist/cli.js actions",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:live": "PROPPOTSDAM_LIVE_TEST=1 vitest run tests/live-read-pass.test.ts",

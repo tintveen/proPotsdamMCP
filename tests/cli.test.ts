@@ -24,30 +24,101 @@ describe("CLI", () => {
         discoverCapabilities: async () => ({
           generatedAt: "2026-04-25T00:00:00.000Z",
           authenticated: true,
+          dataPolicy: "ProPotsdam exposes readable portal data only.",
           services: [],
           totals: {
-            services: 0,
+            serviceCount: 0,
             inboxItems: 0,
-            documentItems: 0,
-            downloadableDocuments: 0,
-            genericRecords: 0,
-            safeDownloadCandidates: 0,
-            skippedDownloadCandidates: 0,
+            portalRecords: 0,
             unknownItems: 0
           },
-          safety: {
-            maxDocumentsBeforeConfirmation: 100,
-            maxDownloadBytesBeforeConfirmation: 1_000_000_000,
-            needsConfirmation: false
-          },
           artifactPath: "/tmp/capabilities.json"
-        })
+        }),
+        discoverWriteActions: async () => {
+          throw new Error("discoverWriteActions should not be called");
+        }
       }
     );
 
     expect(JSON.parse(stdout)).toMatchObject({
       authenticated: true,
       artifactPath: "/tmp/capabilities.json"
+    });
+  });
+
+  it("prints write action maps as JSON", async () => {
+    const { runCli } = await import("../src/cli.js");
+    let stdout = "";
+
+    await runCli(
+      ["node", "propotsdam-mcp", "actions", "--json"],
+      {
+        write: (text: string) => {
+          stdout += text;
+        },
+        question: async () => {
+          throw new Error("question should not be called");
+        },
+        questionHidden: async () => {
+          throw new Error("questionHidden should not be called");
+        }
+      },
+      {
+        discoverCapabilities: async () => {
+          throw new Error("discoverCapabilities should not be called");
+        },
+        discoverWriteActions: async () => ({
+          generatedAt: "2026-04-25T00:00:00.000Z",
+          authenticated: true,
+          actionPolicy: "Prepare-only. No request is sent to ProPotsdam.",
+          services: [
+            {
+              serviceId: "SRV-1",
+              title: "Reparatur",
+              xuclass: "ESQ_TENA_DMG",
+              actionCount: 1,
+              preparableActions: 1,
+              skippedActions: 0,
+              actionIds: ["A-1"]
+            }
+          ],
+          actions: [
+            {
+              id: "A-1",
+              serviceId: "SRV-1",
+              serviceTitle: "Reparatur",
+              xuclass: "ESQ_TENA_DMG",
+              title: "Schaden melden",
+              source: "boxlist",
+              actionKind: "form",
+              method: "POST",
+              endpoint: "/repair-service",
+              fields: [],
+              requiresInput: false,
+              riskLevel: "medium",
+              preparable: true,
+              rawHints: {}
+            }
+          ],
+          totals: {
+            serviceCount: 1,
+            actionCount: 1,
+            preparableActions: 1,
+            skippedActions: 0
+          },
+          partial: false,
+          detailScanLimit: 250,
+          artifactPath: "/tmp/actions.json"
+        })
+      }
+    );
+
+    expect(JSON.parse(stdout)).toMatchObject({
+      authenticated: true,
+      artifactPath: "/tmp/actions.json",
+      totals: {
+        actionCount: 1
+      }
     });
   });
 
@@ -79,7 +150,7 @@ describe("CLI", () => {
           apiVersion: "6.262",
           appVersion: "6.262.8",
           language: "de",
-          downloadDir: "/tmp/downloads",
+          exportDir: "/tmp/exports",
           clientId: "client-id"
         }),
         configureCredentials: async (options: unknown) => {
@@ -120,7 +191,7 @@ describe("CLI", () => {
           apiVersion: "6.262",
           appVersion: "6.262.8",
           language: "de",
-          downloadDir: "/tmp/downloads",
+          exportDir: "/tmp/exports",
           clientId: "client-id"
         }),
         configureCredentials: async (options: unknown) => {
@@ -158,7 +229,7 @@ describe("CLI", () => {
           apiVersion: "6.262",
           appVersion: "6.262.8",
           language: "de",
-          downloadDir: "/tmp/downloads",
+          exportDir: "/tmp/exports",
           clientId: "client-id"
         }),
         configureCredentials: async (options: unknown) => {
@@ -198,7 +269,7 @@ describe("CLI", () => {
           apiVersion: "6.262",
           appVersion: "6.262.8",
           language: "de",
-          downloadDir: "/tmp/downloads",
+          exportDir: "/tmp/exports",
           clientId: "client-id"
         }),
         configureCredentials: vi.fn(),

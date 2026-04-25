@@ -7,7 +7,7 @@ export interface PortalConfig {
   appVersion: string;
   language: string;
   username?: string;
-  downloadDir: string;
+  exportDir: string;
   clientId: string;
 }
 
@@ -56,19 +56,12 @@ export interface InboxItem extends BasePortalItem {
 
 export interface DocumentItem extends BasePortalItem {
   filename?: string;
-  downloadable: boolean;
   resourceId?: string;
   resourceOrigin?: string;
   mimeType?: string;
 }
 
 export type PortalRecordKind = "resource" | "record" | "read_confirmation" | "external_link" | "action";
-export type DownloadSkipReason =
-  | "not_a_resource"
-  | "read_confirmation"
-  | "external_link"
-  | "portal_action"
-  | "missing_resource_id";
 
 export interface PortalRecordItem extends BasePortalItem {
   serviceId?: string;
@@ -76,8 +69,6 @@ export interface PortalRecordItem extends BasePortalItem {
   xuclass?: string;
   itemKind: PortalRecordKind;
   readable: boolean;
-  safeDownload: boolean;
-  skipReason?: DownloadSkipReason;
   filename?: string;
   resourceId?: string;
   resourceOrigin?: string;
@@ -90,36 +81,6 @@ export interface ListResult<T> {
   source: "services" | "boxlist";
 }
 
-export interface DownloadResult {
-  ok: true;
-  path: string;
-  filename: string;
-  mimeType?: string;
-  document?: DocumentItem;
-  candidate?: DownloadCandidate;
-}
-
-export interface DownloadCandidate {
-  id: string;
-  title: string;
-  filename?: string;
-  source: "documents" | "generic";
-  serviceId?: string;
-  serviceTitle?: string;
-  serviceUrl?: string;
-  xuclass?: string;
-  safeDownload: boolean;
-  skipReason?: DownloadSkipReason;
-  resourceId?: string;
-  resourceOrigin?: string;
-  mimeType?: string;
-}
-
-export interface DownloadCandidateList {
-  safe: DownloadCandidate[];
-  skipped: DownloadCandidate[];
-}
-
 export type CapabilitySection = PortalSection | "unknown";
 
 export interface ServiceCapability {
@@ -129,13 +90,11 @@ export interface ServiceCapability {
   xuclass?: string;
   section: CapabilitySection;
   readable: boolean;
-  downloadable: boolean;
   boxlist: {
     available: boolean;
     status?: number;
     itemCount: number;
     readableItems: number;
-    downloadableItems: number;
     error?: string;
   };
   sampleItemIds: string[];
@@ -144,25 +103,140 @@ export interface ServiceCapability {
 export interface CapabilityMap {
   generatedAt: string;
   authenticated: boolean;
+  dataPolicy: string;
   userId?: string;
   userFullName?: string;
   services: ServiceCapability[];
   totals: {
-    services: number;
+    serviceCount: number;
     inboxItems: number;
-    documentItems: number;
-    downloadableDocuments: number;
-    genericRecords: number;
-    safeDownloadCandidates: number;
-    skippedDownloadCandidates: number;
+    portalRecords: number;
     unknownItems: number;
   };
-  safety: {
-    maxDocumentsBeforeConfirmation: number;
-    maxDownloadBytesBeforeConfirmation: number;
-    needsConfirmation: boolean;
-    estimatedDownloadBytes?: number;
-    reason?: string;
+  artifactPath: string;
+}
+
+export type PortalActionKind = "form" | "portal_action" | "read_confirmation" | "external_link" | "navigation" | "ambiguous";
+export type PortalActionRiskLevel = "none" | "low" | "medium" | "high";
+
+export interface PortalActionField {
+  name: string;
+  portalId?: string;
+  label?: string;
+  type?: string;
+  required: boolean;
+  hidden: boolean;
+  editable: boolean;
+  value?: string;
+}
+
+export interface PortalAction {
+  id: string;
+  serviceId?: string;
+  serviceTitle: string;
+  serviceUrl?: string;
+  xuclass?: string;
+  title: string;
+  source: "boxlist" | "detail";
+  recordId?: string;
+  recordTitle?: string;
+  actionKind: PortalActionKind;
+  method: "GET" | "POST";
+  endpoint?: string;
+  fields: PortalActionField[];
+  requiresInput: boolean;
+  riskLevel: PortalActionRiskLevel;
+  preparable: boolean;
+  notPreparableReason?: "read_confirmation" | "external_link" | "navigation" | "ambiguous" | "missing_form_metadata";
+  rawHints: Record<string, string>;
+}
+
+export interface PortalActionMap {
+  generatedAt: string;
+  authenticated: boolean;
+  actionPolicy: string;
+  userId?: string;
+  userFullName?: string;
+  services: Array<{
+    serviceId?: string;
+    title: string;
+    xuclass?: string;
+    actionCount: number;
+    preparableActions: number;
+    skippedActions: number;
+    actionIds: string[];
+    error?: string;
+  }>;
+  actions: PortalAction[];
+  partial: boolean;
+  detailScanLimit: number;
+  totals: {
+    serviceCount: number;
+    actionCount: number;
+    preparableActions: number;
+    skippedActions: number;
   };
   artifactPath: string;
+}
+
+export interface PreparedPortalAction {
+  ok: boolean;
+  preparedOnly: true;
+  actionId: string;
+  title: string;
+  summary: string;
+  validationIssues: string[];
+  draft: {
+    method: "GET" | "POST";
+    endpoint?: string;
+    fields: Array<{
+      name: string;
+      label?: string;
+      required: boolean;
+      hidden: boolean;
+      editable: boolean;
+      currentValue?: string;
+      proposedValue?: string;
+    }>;
+  };
+}
+
+export interface PortalActionCommitRequest {
+  ok: boolean;
+  actionId: string;
+  actionTitle?: string;
+  confirmationId?: string;
+  expiresAt?: string;
+  summary: string;
+  validationIssues: string[];
+  diff: Array<{
+    name: string;
+    label?: string;
+    currentValue?: string;
+    proposedValue: string;
+  }>;
+}
+
+export interface StoredPortalActionConfirmation {
+  confirmationId: string;
+  actionId: string;
+  actionTitle: string;
+  recordId?: string;
+  recordTitle?: string;
+  xuclass?: string;
+  serviceUrl?: string;
+  values: Record<string, string>;
+  diff: PortalActionCommitRequest["diff"];
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface PortalCommitResult {
+  ok: boolean;
+  actionId: string;
+  recordId?: string;
+  committedAt: string;
+  status: number;
+  summary: string;
+  portalMessage?: string;
 }

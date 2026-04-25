@@ -1,5 +1,14 @@
 import { DOCUMENT_ALIASES, INBOX_ALIASES } from "../constants.js";
-import type { AuthResult, DocumentItem, DownloadSkipReason, InboxItem, PortalRecordItem, PortalSection, PortalService } from "../types.js";
+import type {
+  AuthResult,
+  DocumentItem,
+  InboxItem,
+  PortalAction,
+  PortalActionField,
+  PortalRecordItem,
+  PortalSection,
+  PortalService
+} from "../types.js";
 import { collectObjects, firstScalar, flattenScalars, parseXml } from "./xml.js";
 
 const DATE_PATTERN = /\b\d{1,2}\.\d{1,2}\.\d{2,4}\b/;
@@ -163,6 +172,25 @@ export function extractPortalRecordItems(
   );
 }
 
+export function extractPortalActions(
+  text: string,
+  contentType: string | undefined,
+  service: Pick<PortalService, "id" | "serviceUrl" | "xuclass"> & { title?: string; serviceId?: string; serviceTitle?: string },
+  context: { source?: PortalAction["source"]; recordId?: string; recordTitle?: string } = {}
+): PortalAction[] {
+  const parsed = parseBody(text, contentType);
+  const detailActions = context.source === "detail" ? extractDetailFormActions(parsed, service, context) : [];
+  if (detailActions.length > 0) {
+    return dedupeBy(detailActions, actionDedupeKey);
+  }
+  return dedupeBy(
+    collectObjects(parsed)
+      .map((candidate) => normalizePortalActionCandidate(candidate, service, context))
+      .filter((action): action is PortalAction => action !== null),
+    actionDedupeKey
+  );
+}
+
 export function normalizeDetailText(text: string, contentType?: string): string {
   try {
     const parsed = parseBody(text, contentType);
@@ -219,7 +247,6 @@ function normalizeDocumentCandidate(candidate: Record<string, unknown>): Documen
     serviceUrl: firstScalar(scalars, ["SERVICE", "@service", "serviceUrl"]),
     rawSource: "boxlist",
     filename,
-    downloadable: Boolean(resourceId || firstScalar(scalars, ["downloadUrl", "documentUrl"]) || DATE_PATTERN.test(filename)),
     resourceId,
     resourceOrigin: firstScalar(scalars, ["resourceOrigin", "origin"]),
     mimeType: firstScalar(scalars, ["mimeType", "mediaType", "contentType"])
@@ -265,8 +292,6 @@ function normalizePortalRecordCandidate(
     xuclass: service.xuclass,
     itemKind: classification.itemKind,
     readable: true,
-    safeDownload: classification.safeDownload,
-    skipReason: classification.skipReason,
     filename,
     resourceId,
     resourceOrigin,
@@ -280,35 +305,287 @@ function classifyPortalRecord(input: {
   resourceId?: string;
   url?: string;
   scalars: Record<string, string>;
-}): Pick<PortalRecordItem, "itemKind" | "safeDownload" | "skipReason"> {
+}): Pick<PortalRecordItem, "itemKind"> {
   const haystack = `${input.id} ${input.title} ${JSON.stringify(input.scalars)}`.toLowerCase();
   if (haystack.includes("$bs_readconfirmed") || haystack.includes("lesebestätigung")) {
-    return unsafeRecord("read_confirmation", "read_confirmation");
+    return { itemKind: "read_confirmation" };
   }
   if (haystack.includes("$bs_call_link") || /^https?:\/\//i.test(input.url ?? "")) {
-    return unsafeRecord("external_link", "external_link");
+    return { itemKind: "external_link" };
   }
   if (input.id.startsWith("$BS_") || input.id.startsWith("$") || firstScalar(input.scalars, ["action", "command", "ACTION"])) {
-    return unsafeRecord("action", "portal_action");
+    return { itemKind: "action" };
   }
   if (input.resourceId) {
     return {
-      itemKind: "resource",
-      safeDownload: true
+      itemKind: "resource"
     };
   }
-  return unsafeRecord("record", "not_a_resource");
+  return { itemKind: "record" };
 }
 
-function unsafeRecord(
-  itemKind: PortalRecordItem["itemKind"],
-  skipReason: DownloadSkipReason
-): Pick<PortalRecordItem, "itemKind" | "safeDownload" | "skipReason"> {
+function normalizePortalActionCandidate(
+  candidate: Record<string, unknown>,
+  service: Pick<PortalService, "id" | "serviceUrl" | "xuclass"> & { title?: string; serviceId?: string; serviceTitle?: string },
+  context: { source?: PortalAction["source"]; recordId?: string; recordTitle?: string } = {}
+): PortalAction | null {
+  const scalars = immediateScalars(candidate);
+  const flatScalars = flattenScalars(candidate);
+  const title = firstScalar(scalars, ["title", "filename", "subtitle", "TEXT"]);
+  const id = firstScalar(scalars, ["id", "formid", "@id", "FORMID", "resourceId"]) ?? title;
+  if (!title || !id) {
+    return null;
+  }
+
+  const fields = extractActionFields(candidate);
+  const command = firstScalar(flatScalars, ["command", "COMMAND", "action", "ACTION", "name"]);
+  const explicitEndpoint = firstScalar(scalars, ["endpoint", "actionUrl", "formAction", "SERVICE"]);
+  const endpoint = explicitEndpoint ?? service.serviceUrl;
+  const url = firstScalar(flatScalars, ["url", "URL", "href", "link", "SERVICE"]);
+  const methodValue = firstScalar(flatScalars, ["method", "METHOD"]);
+  const hasExplicitActionHint = Boolean(command || methodValue || explicitEndpoint || id.startsWith("$BS_") || id.startsWith("$"));
+  if ((context.source ?? "boxlist") === "boxlist" && fields.length > 0 && !hasExplicitActionHint) {
+    return null;
+  }
+  const method = methodValue?.toUpperCase() === "GET" ? "GET" : "POST";
+  const classification = classifyPortalAction({
+    id,
+    title,
+    command,
+    url,
+    endpoint,
+    fields
+  });
+  if (!classification) {
+    return null;
+  }
+
   return {
-    itemKind,
-    safeDownload: false,
-    skipReason
+    id,
+    serviceId: service.serviceId ?? service.id,
+    serviceTitle: service.serviceTitle ?? service.title ?? service.xuclass ?? "Unknown service",
+    serviceUrl: service.serviceUrl,
+    xuclass: service.xuclass,
+    title,
+    source: context.source ?? "boxlist",
+    recordId: context.recordId,
+    recordTitle: context.recordTitle,
+    actionKind: classification.actionKind,
+    method,
+    endpoint,
+    fields,
+    requiresInput: fields.some((field) => field.required && !field.hidden && !field.value),
+    riskLevel: classification.riskLevel,
+    preparable: classification.preparable,
+    notPreparableReason: classification.notPreparableReason,
+    rawHints: compactHints({
+      command,
+      method: methodValue,
+      endpoint,
+      id
+    })
   };
+}
+
+function extractDetailFormActions(
+  parsed: unknown,
+  service: Pick<PortalService, "id" | "serviceUrl" | "xuclass"> & { title?: string; serviceId?: string; serviceTitle?: string },
+  context: { source?: PortalAction["source"]; recordId?: string; recordTitle?: string }
+): PortalAction[] {
+  const actionObjects = collectNamedObjects(parsed, "action");
+  const fields = dedupeBy(
+    ["field", "textfield", "choicefield", "checkboxfield", "hiddenfield"]
+      .flatMap((key) => collectNamedObjects(parsed, key))
+      .map(normalizeActionField)
+      .filter((field): field is PortalActionField => field !== null),
+    (field) => field.name
+  );
+  const actionObject = actionObjects.find((objectValue) => {
+    const scalars = flattenScalars(objectValue);
+    const id = firstScalar(scalars, ["@command", "command", "id", "@id", "name", "action"]);
+    const text = firstScalar(scalars, ["text", "TEXT", "title", "@title", "label"]);
+    return looksWritableAction(`${id ?? ""} ${text ?? ""}`) && fields.length > 0;
+  });
+  if (!actionObject) {
+    return [];
+  }
+
+  const actionScalars = flattenScalars(actionObject);
+  const command = firstScalar(actionScalars, ["@command", "command", "COMMAND", "action"]);
+  const id = command ?? firstScalar(actionScalars, ["id", "@id", "name", "@name"]) ?? "portal_action";
+  const title = firstScalar(actionScalars, ["text", "TEXT", "title", "@title", "label", "@label"]) ?? id;
+  const methodValue = firstScalar(actionScalars, ["method", "@method", "METHOD"]);
+  const endpoint = firstScalar(actionScalars, ["endpoint", "actionUrl", "formAction", "SERVICE"]) ?? service.serviceUrl;
+  return [{
+    id,
+    serviceId: service.serviceId ?? service.id,
+    serviceTitle: service.serviceTitle ?? service.title ?? service.xuclass ?? "Unknown service",
+    serviceUrl: service.serviceUrl,
+    xuclass: service.xuclass,
+    title,
+    source: "detail",
+    recordId: context.recordId,
+    recordTitle: context.recordTitle,
+    actionKind: "form",
+    method: methodValue?.toUpperCase() === "GET" ? "GET" : "POST",
+    endpoint,
+    fields,
+    requiresInput: fields.some((field) => field.required && !field.hidden && field.editable && !field.value),
+    riskLevel: "medium",
+    preparable: true,
+    rawHints: compactHints({
+      command: command ?? id,
+      method: methodValue,
+      endpoint,
+      recordId: context.recordId
+    })
+  }];
+}
+
+function classifyPortalAction(input: {
+  id: string;
+  title: string;
+  command?: string;
+  url?: string;
+  endpoint?: string;
+  fields: PortalActionField[];
+}): Pick<PortalAction, "actionKind" | "riskLevel" | "preparable" | "notPreparableReason"> | null {
+  const haystack = `${input.id} ${input.title} ${input.command ?? ""}`.toLowerCase();
+  if (haystack.includes("$bs_readconfirmed") || haystack.includes("lesebestätigung")) {
+    return nonPreparableAction("read_confirmation", "read_confirmation", "none");
+  }
+  if (haystack.includes("$bs_call_link") || /^https?:\/\//i.test(input.url ?? "")) {
+    return nonPreparableAction("external_link", "external_link", "none");
+  }
+  if (haystack.includes("navigate") || haystack.includes("zurück") || haystack.includes("weiter") && input.fields.length === 0) {
+    return nonPreparableAction("navigation", "navigation", "none");
+  }
+
+  const commandLooksWritable = looksWritableAction(input.command ?? input.title);
+  const hasEnoughFormMetadata = input.fields.length > 0 && Boolean(input.endpoint);
+  if (hasEnoughFormMetadata && (commandLooksWritable || input.command || input.endpoint)) {
+    return {
+      actionKind: commandLooksWritable ? "form" : "portal_action",
+      riskLevel: "medium",
+      preparable: true
+    };
+  }
+  if (input.id.startsWith("$BS_") || input.id.startsWith("$") || input.command) {
+    return nonPreparableAction("ambiguous", "ambiguous", "low");
+  }
+  return null;
+}
+
+function nonPreparableAction(
+  actionKind: PortalAction["actionKind"],
+  notPreparableReason: NonNullable<PortalAction["notPreparableReason"]>,
+  riskLevel: PortalAction["riskLevel"]
+): Pick<PortalAction, "actionKind" | "riskLevel" | "preparable" | "notPreparableReason"> {
+  return {
+    actionKind,
+    riskLevel,
+    preparable: false,
+    notPreparableReason
+  };
+}
+
+function extractActionFields(candidate: Record<string, unknown>): PortalActionField[] {
+  const fieldObjects = ["field", "textfield", "choicefield", "checkboxfield", "hiddenfield"]
+    .flatMap((key) => collectNamedObjects(candidate, key));
+  if (fieldObjects.length > 0) {
+    return dedupeBy(
+      fieldObjects.map(normalizeActionField).filter((field): field is PortalActionField => field !== null),
+      (field) => field.name
+    );
+  }
+  return dedupeBy(
+    collectObjects(candidate)
+      .filter((objectValue) => objectValue !== candidate)
+      .map(normalizeActionField)
+      .filter((field): field is PortalActionField => field !== null),
+    (field) => field.name
+  );
+}
+
+function normalizeActionField(candidate: Record<string, unknown>): PortalActionField | null {
+  const scalars = flattenScalars(candidate);
+  const portalId = firstScalar(scalars, ["id", "ID", "@id"]);
+  const name = firstScalar(scalars, ["refname", "@refname", "name", "NAME", "field", "FIELD", "@name"]) ?? portalId;
+  if (!name) {
+    return null;
+  }
+  const label = firstScalar(scalars, ["label", "LABEL", "title", "@title", "TEXT"]);
+  const type = firstScalar(scalars, ["type", "TYPE", "inputType"]);
+  const required = firstBoolean(scalars, ["required", "REQUIRED", "mandatory", "MANDATORY", "@required"]) ?? false;
+  const hidden = firstBoolean(scalars, ["hidden", "HIDDEN", "@hidden"]) ?? (type?.toLowerCase() === "hidden" || firstScalar(scalars, ["visibility", "@visibility"]) === "hidden");
+  const disabled = firstBoolean(scalars, ["disabled", "DISABLED", "locked", "LOCKED", "readOnly", "readonly"]) ?? false;
+  const editable = hidden ? false : (firstBoolean(scalars, ["editable", "EDITABLE", "enabled", "ENABLED", "@editable"]) ?? !disabled);
+  const value = firstScalar(scalars, ["value", "VALUE", "#text", "meta:saved_value", "@meta:saved_value"]) ?? selectedChoiceValue(candidate);
+  return {
+    name,
+    portalId,
+    label,
+    type,
+    required,
+    hidden,
+    editable,
+    value
+  };
+}
+
+function selectedChoiceValue(candidate: Record<string, unknown>): string | undefined {
+  const choices = collectNamedObjects(candidate, "choice");
+  const selected = choices.find((choice) => firstBoolean(flattenScalars(choice), ["selected", "@selected"]) === true);
+  if (!selected) {
+    return undefined;
+  }
+  const scalars = flattenScalars(selected);
+  return firstScalar(scalars, ["id", "@id", "value", "@value", "name", "@name", "#text", "title", "@title"]);
+}
+
+function looksWritableAction(value: string): boolean {
+  return /(submit|save|save_|send|create|update|change|melden|senden|speichern|ändern|bestaetigen|bestätigen)/i.test(value);
+}
+
+function actionDedupeKey(action: PortalAction): string {
+  return `${action.serviceId ?? ""}::${action.recordId ?? ""}::${action.id}::${action.title}`;
+}
+
+function collectNamedObjects(value: unknown, keyName: string, output: Record<string, unknown>[] = []): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectNamedObjects(entry, keyName, output);
+    }
+    return output;
+  }
+  if (!value || typeof value !== "object") {
+    return output;
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (key.toLowerCase() === keyName.toLowerCase()) {
+      if (Array.isArray(entry)) {
+        for (const item of entry) {
+          if (item && typeof item === "object" && !Array.isArray(item)) {
+            output.push(item as Record<string, unknown>);
+          }
+        }
+      } else if (entry && typeof entry === "object") {
+        output.push(entry as Record<string, unknown>);
+      }
+    }
+    collectNamedObjects(entry, keyName, output);
+  }
+  return output;
+}
+
+function compactHints(input: Record<string, string | undefined>): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value) {
+      output[key] = value;
+    }
+  }
+  return output;
 }
 
 function firstBoolean(input: Record<string, string>, keys: string[]): boolean | undefined {

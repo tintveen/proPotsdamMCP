@@ -29,11 +29,11 @@ describe("capability discovery", () => {
       "generic",
       "unknown"
     ]);
-    expect(classifyServiceCapability(services[1]!).downloadable).toBe(true);
+    expect(classifyServiceCapability(services[1]!).readable).toBe(true);
     expect(classifyServiceCapability(services[2]!).readable).toBe(true);
   });
 
-  it("extracts generic records and separates safe resources from action-like rows", async () => {
+  it("extracts generic records without exposing download consent wording", async () => {
     const { extractPortalRecordItems } = await import("../src/portal/parsers.js");
 
     const records = extractPortalRecordItems(`
@@ -72,24 +72,18 @@ describe("capability discovery", () => {
       serviceTitle: "Verträge",
       itemKind: "resource",
       readable: true,
-      safeDownload: true,
       resourceId: "RES-1"
     });
     expect(records[1]).toMatchObject({
-      itemKind: "read_confirmation",
-      safeDownload: false,
-      skipReason: "read_confirmation"
+      itemKind: "read_confirmation"
     });
     expect(records[2]).toMatchObject({
-      itemKind: "external_link",
-      safeDownload: false,
-      skipReason: "external_link"
+      itemKind: "external_link"
     });
     expect(records[3]).toMatchObject({
-      itemKind: "record",
-      safeDownload: false,
-      skipReason: "not_a_resource"
+      itemKind: "record"
     });
+    expect(JSON.stringify(records)).not.toMatch(/download|candidate|safeDownload|downloadable/i);
   });
 
   it("discovers account services, boxlist item counts, and writes a redacted report", async () => {
@@ -100,11 +94,12 @@ describe("capability discovery", () => {
 
     expect(report.services).toHaveLength(3);
     expect(report.totals).toMatchObject({
-      services: 3,
+      serviceCount: 3,
       inboxItems: 1,
-      documentItems: 1,
-      downloadableDocuments: 1
+      portalRecords: 1
     });
+    expect(report.dataPolicy).toContain("ProPotsdam");
+    expect(JSON.stringify(report)).not.toMatch(/candidate|downloadable|safeDownload|downloadableDocuments|safeDownloadCandidates|skippedDownloadCandidates/i);
     expect(report.services.map((service) => service.section)).toEqual([
       "inbox",
       "documents",

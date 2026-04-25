@@ -9,7 +9,7 @@ import type {
 } from "../types.js";
 import { flattenScalars } from "./xml.js";
 
-export function classifyServiceCapability(service: PortalService): Pick<ServiceCapability, "section" | "readable" | "downloadable"> {
+export function classifyServiceCapability(service: PortalService): Pick<ServiceCapability, "section" | "readable"> {
   const haystack = `${service.title} ${service.xuclass ?? ""} ${JSON.stringify(flattenScalars(service.raw))}`.toLowerCase();
   const section: CapabilitySection = INBOX_ALIASES.some((alias) => haystack.includes(alias))
     ? "inbox"
@@ -21,8 +21,7 @@ export function classifyServiceCapability(service: PortalService): Pick<ServiceC
 
   return {
     section,
-    readable: section === "inbox" || section === "documents" || section === "generic",
-    downloadable: section === "documents"
+    readable: section === "inbox" || section === "documents" || section === "generic"
   };
 }
 
@@ -41,9 +40,6 @@ export function buildServiceCapability(input: {
   const documentItems = input.documentItems ?? [];
   const portalRecords = input.portalRecords ?? [];
   const itemCount = inboxItems.length + documentItems.length + portalRecords.length + (input.unknownItemCount ?? 0);
-  const downloadableItems =
-    documentItems.filter((item) => item.downloadable).length +
-    portalRecords.filter((item) => item.safeDownload).length;
   const sampleItemIds = [...inboxItems, ...documentItems, ...portalRecords].map((item) => item.id).slice(0, 10);
 
   return {
@@ -53,13 +49,11 @@ export function buildServiceCapability(input: {
     xuclass: input.service.xuclass,
     section: classified.section,
     readable: classified.readable || itemCount > 0,
-    downloadable: classified.downloadable || downloadableItems > 0,
     boxlist: {
       available: input.available,
       status: input.status,
       itemCount,
       readableItems: inboxItems.length + documentItems.length + portalRecords.length,
-      downloadableItems,
       error: input.error
     },
     sampleItemIds

@@ -9,7 +9,7 @@ describe("CookieSession", () => {
       apiVersion: "6.262",
       appVersion: "6.262.8",
       language: "de",
-      downloadDir: "/tmp/downloads",
+      exportDir: "/tmp/exports",
       clientId: "client-id"
     };
     const session = new CookieSession(config);

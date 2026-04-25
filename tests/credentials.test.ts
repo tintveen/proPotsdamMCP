@@ -82,4 +82,42 @@ describe("config repair", () => {
       baseUrl: DEFAULT_BASE_URL
     });
   });
+
+  it("migrates legacy downloadDir to exportDir", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    vi.resetModules();
+
+    const { paths, loadConfig } = await import("../src/storage.js");
+    await writeFile(paths.configFile, JSON.stringify({
+      username: "info@tintveen.com",
+      baseUrl: "https://portal.example.test",
+      downloadDir: "/tmp/legacy-downloads"
+    }));
+
+    const config = await loadConfig();
+    expect(config).toMatchObject({
+      username: "info@tintveen.com",
+      exportDir: "/tmp/legacy-downloads"
+    });
+    expect(JSON.stringify(config)).not.toContain("downloadDir");
+  });
+
+  it("renames the legacy default local output folder to exports", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    vi.resetModules();
+
+    const { paths, loadConfig } = await import("../src/storage.js");
+    await writeFile(paths.configFile, JSON.stringify({
+      username: "info@tintveen.com",
+      baseUrl: "https://portal.example.test",
+      exportDir: path.join(tempDir, "downloads")
+    }));
+
+    const config = await loadConfig();
+    expect(config.exportDir).toBe(paths.exportsDir);
+  });
 });
