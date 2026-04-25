@@ -1,5 +1,7 @@
 # proPotsdamMCP
 
+![ProPotsdam MCP banner](proPotsdamMCPBanner.png)
+
 Unofficial local MCP server for the ProPotsdam/Easysquare customer portal.
 
 It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Limited write support is guarded by an explicit confirmation flow and should be treated as experimental.
