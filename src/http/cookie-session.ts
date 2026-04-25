@@ -75,7 +75,11 @@ export class CookieSession {
     if (/^https?:\/\//i.test(pathOrUrl)) {
       return pathOrUrl;
     }
-    return new URL(pathOrUrl, this.config.baseUrl).toString();
+    try {
+      return new URL(pathOrUrl, this.config.baseUrl).toString();
+    } catch {
+      throw new Error(`Invalid config baseUrl '${this.config.baseUrl}'. Run \`npm run auth:set\` to repair it.`);
+    }
   }
 
   private async requestRaw(pathOrUrl: string, init: RequestInit): Promise<Response> {

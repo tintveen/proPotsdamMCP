@@ -22,6 +22,10 @@ export function createServer(client = new PortalClient()): McpServer {
     description: "Delete local portal session cookies without deleting Keychain credentials."
   }, async () => client.logout());
 
+  registerJsonTool(server, "propotsdam_discover_capabilities", {
+    description: "Discover read and download capabilities exposed by the authenticated ProPotsdam account."
+  }, async () => client.discoverCapabilities());
+
   registerJsonTool(server, "propotsdam_list_inbox", {
     description: "List ProPotsdam portal inbox messages."
   }, async () => client.listInbox());
@@ -36,6 +40,32 @@ export function createServer(client = new PortalClient()): McpServer {
   registerJsonTool(server, "propotsdam_list_documents", {
     description: "List ProPotsdam portal documents."
   }, async () => client.listDocuments());
+
+  server.registerTool("propotsdam_list_portal_records", {
+    description: "List read-only generic ProPotsdam portal records by service id or xuclass.",
+    inputSchema: {
+      serviceId: z.string().min(1).optional(),
+      xuclass: z.string().min(1).optional()
+    }
+  }, async (input) => wrapTool(() => client.listPortalRecords(input)));
+
+  server.registerTool("propotsdam_get_portal_record", {
+    description: "Read one generic ProPotsdam portal record by id.",
+    inputSchema: {
+      id: z.string().min(1)
+    }
+  }, async ({ id }) => wrapTool(() => client.getPortalRecord(id)));
+
+  registerJsonTool(server, "propotsdam_list_download_candidates", {
+    description: "List safe and skipped ProPotsdam download candidates across documents and generic records."
+  }, async () => client.listDownloadCandidates());
+
+  server.registerTool("propotsdam_download_candidate", {
+    description: "Download one safe ProPotsdam candidate by id into the configured local safe folder.",
+    inputSchema: {
+      id: z.string().min(1)
+    }
+  }, async ({ id }) => wrapTool(() => client.downloadCandidate(id)));
 
   server.registerTool("propotsdam_download_document", {
     description: "Download one ProPotsdam portal document by id into the configured local safe folder.",

@@ -32,11 +32,15 @@ export async function loadConfig(): Promise<PortalConfig> {
   try {
     const raw = await readFile(paths.configFile, "utf8");
     const parsed = JSON.parse(raw) as Partial<PortalConfig>;
-    return {
+    const merged = {
       ...defaultConfig(),
       ...parsed,
       downloadDir: parsed.downloadDir ?? paths.downloadsDir,
       clientId: parsed.clientId ?? randomUUID()
+    };
+    return {
+      ...merged,
+      baseUrl: normalizeBaseUrl(merged.baseUrl)
     };
   } catch {
     return defaultConfig();
@@ -75,4 +79,19 @@ export function defaultConfig(): PortalConfig {
     downloadDir: paths.downloadsDir,
     clientId: randomUUID()
   };
+}
+
+export function normalizeBaseUrl(value: string | undefined): string {
+  if (!value) {
+    return DEFAULT_BASE_URL;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return DEFAULT_BASE_URL;
+    }
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return DEFAULT_BASE_URL;
+  }
 }

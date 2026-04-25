@@ -1,4 +1,4 @@
-export type PortalSection = "inbox" | "documents";
+export type PortalSection = "inbox" | "documents" | "generic";
 export type AuthState = "authenticated" | "unauthenticated" | "action_required" | "error";
 
 export interface PortalConfig {
@@ -62,6 +62,29 @@ export interface DocumentItem extends BasePortalItem {
   mimeType?: string;
 }
 
+export type PortalRecordKind = "resource" | "record" | "read_confirmation" | "external_link" | "action";
+export type DownloadSkipReason =
+  | "not_a_resource"
+  | "read_confirmation"
+  | "external_link"
+  | "portal_action"
+  | "missing_resource_id";
+
+export interface PortalRecordItem extends BasePortalItem {
+  serviceId?: string;
+  serviceTitle: string;
+  xuclass?: string;
+  itemKind: PortalRecordKind;
+  readable: boolean;
+  safeDownload: boolean;
+  skipReason?: DownloadSkipReason;
+  filename?: string;
+  resourceId?: string;
+  resourceOrigin?: string;
+  mimeType?: string;
+  detailText?: string;
+}
+
 export interface ListResult<T> {
   items: T[];
   source: "services" | "boxlist";
@@ -72,5 +95,74 @@ export interface DownloadResult {
   path: string;
   filename: string;
   mimeType?: string;
-  document: DocumentItem;
+  document?: DocumentItem;
+  candidate?: DownloadCandidate;
+}
+
+export interface DownloadCandidate {
+  id: string;
+  title: string;
+  filename?: string;
+  source: "documents" | "generic";
+  serviceId?: string;
+  serviceTitle?: string;
+  serviceUrl?: string;
+  xuclass?: string;
+  safeDownload: boolean;
+  skipReason?: DownloadSkipReason;
+  resourceId?: string;
+  resourceOrigin?: string;
+  mimeType?: string;
+}
+
+export interface DownloadCandidateList {
+  safe: DownloadCandidate[];
+  skipped: DownloadCandidate[];
+}
+
+export type CapabilitySection = PortalSection | "unknown";
+
+export interface ServiceCapability {
+  id?: string;
+  title: string;
+  serviceUrl?: string;
+  xuclass?: string;
+  section: CapabilitySection;
+  readable: boolean;
+  downloadable: boolean;
+  boxlist: {
+    available: boolean;
+    status?: number;
+    itemCount: number;
+    readableItems: number;
+    downloadableItems: number;
+    error?: string;
+  };
+  sampleItemIds: string[];
+}
+
+export interface CapabilityMap {
+  generatedAt: string;
+  authenticated: boolean;
+  userId?: string;
+  userFullName?: string;
+  services: ServiceCapability[];
+  totals: {
+    services: number;
+    inboxItems: number;
+    documentItems: number;
+    downloadableDocuments: number;
+    genericRecords: number;
+    safeDownloadCandidates: number;
+    skippedDownloadCandidates: number;
+    unknownItems: number;
+  };
+  safety: {
+    maxDocumentsBeforeConfirmation: number;
+    maxDownloadBytesBeforeConfirmation: number;
+    needsConfirmation: boolean;
+    estimatedDownloadBytes?: number;
+    reason?: string;
+  };
+  artifactPath: string;
 }

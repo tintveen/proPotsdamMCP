@@ -9,8 +9,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",
+    "auth:set": "node dist/cli.js auth set",
+    "discover": "node dist/cli.js discover",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
+    "test:live": "PROPPOTSDAM_LIVE_TEST=1 vitest run tests/live-read-pass.test.ts",
     "test:watch": "vitest"
   },
   "keywords": [

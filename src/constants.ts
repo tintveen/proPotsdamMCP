@@ -28,4 +28,26 @@ export const DOCUMENT_ALIASES = [
   "files"
 ];
 
+export const GENERIC_SERVICE_ALIASES = [
+  "verträge",
+  "vertraege",
+  "vertrag",
+  "tenant",
+  "reparatur",
+  "kundenservice",
+  "verbräuche",
+  "verbraeuche",
+  "hausinfo",
+  "pinbrd",
+  "immobiliensuche",
+  "meine daten",
+  "ESQ_TENANT",
+  "ESQ_TENA_DMG",
+  "ESQ_TENA_SRV",
+  "ESQ_TENA_CSM",
+  "TN_PINBRD",
+  "ESQ_IA_REOBJ",
+  "ESQ_IA_PART"
+].map((value) => value.toLowerCase());
+
 export const SECRET_REDACTION = "[REDACTED]";

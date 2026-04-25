@@ -1,5 +1,5 @@
 import { DOCUMENT_ALIASES, INBOX_ALIASES } from "../constants.js";
-import type { AuthResult, DocumentItem, InboxItem, PortalSection, PortalService } from "../types.js";
+import type { AuthResult, DocumentItem, DownloadSkipReason, InboxItem, PortalRecordItem, PortalSection, PortalService } from "../types.js";
 import { collectObjects, firstScalar, flattenScalars, parseXml } from "./xml.js";
 
 const DATE_PATTERN = /\b\d{1,2}\.\d{1,2}\.\d{2,4}\b/;
@@ -149,6 +149,20 @@ export function extractDocumentItems(text: string, contentType?: string): Docume
   );
 }
 
+export function extractPortalRecordItems(
+  text: string,
+  contentType: string | undefined,
+  service: Pick<PortalService, "id" | "serviceUrl" | "xuclass"> & { title?: string; serviceId?: string; serviceTitle?: string }
+): PortalRecordItem[] {
+  const parsed = parseBody(text, contentType);
+  return dedupeBy(
+    collectObjects(parsed)
+      .map((candidate) => normalizePortalRecordCandidate(candidate, service))
+      .filter((item): item is PortalRecordItem => item !== null),
+    (item) => `${item.serviceId ?? ""}::${item.id}::${item.title}`
+  );
+}
+
 export function normalizeDetailText(text: string, contentType?: string): string {
   try {
     const parsed = parseBody(text, contentType);
@@ -185,9 +199,9 @@ function normalizeInboxCandidate(candidate: Record<string, unknown>): InboxItem 
 }
 
 function normalizeDocumentCandidate(candidate: Record<string, unknown>): DocumentItem | null {
-  const scalars = flattenScalars(candidate);
+  const scalars = immediateScalars(candidate);
   const title = firstScalar(scalars, ["title", "filename", "name", "subtitle", "TEXT"]);
-  const id = firstScalar(scalars, ["id", "formid", "@id", "FORMID", "resourceId"]) ?? title;
+  const id = firstScalar(scalars, ["id", "formid", "@id", "FORMID", "resourceId"]);
   if (!title || !id) {
     return null;
   }
@@ -209,6 +223,91 @@ function normalizeDocumentCandidate(candidate: Record<string, unknown>): Documen
     resourceId,
     resourceOrigin: firstScalar(scalars, ["resourceOrigin", "origin"]),
     mimeType: firstScalar(scalars, ["mimeType", "mediaType", "contentType"])
+  };
+}
+
+function normalizePortalRecordCandidate(
+  candidate: Record<string, unknown>,
+  service: Pick<PortalService, "id" | "serviceUrl" | "xuclass"> & { title?: string; serviceId?: string; serviceTitle?: string }
+): PortalRecordItem | null {
+  const scalars = immediateScalars(candidate);
+  const title = firstScalar(scalars, ["title", "filename", "name", "subtitle", "TEXT"]);
+  const id = firstScalar(scalars, ["id", "formid", "@id", "FORMID", "resourceId"]) ?? title;
+  if (!title || !id) {
+    return null;
+  }
+
+  const resourceId = firstScalar(scalars, ["resourceId", "RESOURCEID"]);
+  const resourceOrigin = firstScalar(scalars, ["resourceOrigin", "origin"]);
+  const url = firstScalar(scalars, ["downloadUrl", "documentUrl", "url", "URL", "SERVICE"]);
+  const mimeType = firstScalar(scalars, ["mimeType", "mediaType", "contentType"]);
+  const filename = firstScalar(scalars, ["filename", "title", "name", "TEXT"]) ?? safeFilename(title);
+  const classification = classifyPortalRecord({
+    id,
+    title,
+    resourceId,
+    url,
+    scalars
+  });
+
+  return {
+    id,
+    title,
+    date: firstScalar(scalars, ["date", "createdAt", "created", "DATE"]),
+    subtitle: firstScalar(scalars, ["subtitle", "SUBTITLE"]),
+    abstract: firstScalar(scalars, ["abstract", "note", "description", "ABSTRACT"]),
+    category: firstScalar(scalars, ["category", "type", "CATEGORY"]),
+    detailUrl: firstScalar(scalars, ["detailUrl", "SERVICE"]),
+    serviceUrl: service.serviceUrl,
+    rawSource: "boxlist",
+    serviceId: service.serviceId ?? service.id,
+    serviceTitle: service.serviceTitle ?? service.title ?? service.xuclass ?? "Unknown service",
+    xuclass: service.xuclass,
+    itemKind: classification.itemKind,
+    readable: true,
+    safeDownload: classification.safeDownload,
+    skipReason: classification.skipReason,
+    filename,
+    resourceId,
+    resourceOrigin,
+    mimeType
+  };
+}
+
+function classifyPortalRecord(input: {
+  id: string;
+  title: string;
+  resourceId?: string;
+  url?: string;
+  scalars: Record<string, string>;
+}): Pick<PortalRecordItem, "itemKind" | "safeDownload" | "skipReason"> {
+  const haystack = `${input.id} ${input.title} ${JSON.stringify(input.scalars)}`.toLowerCase();
+  if (haystack.includes("$bs_readconfirmed") || haystack.includes("lesebestätigung")) {
+    return unsafeRecord("read_confirmation", "read_confirmation");
+  }
+  if (haystack.includes("$bs_call_link") || /^https?:\/\//i.test(input.url ?? "")) {
+    return unsafeRecord("external_link", "external_link");
+  }
+  if (input.id.startsWith("$BS_") || input.id.startsWith("$") || firstScalar(input.scalars, ["action", "command", "ACTION"])) {
+    return unsafeRecord("action", "portal_action");
+  }
+  if (input.resourceId) {
+    return {
+      itemKind: "resource",
+      safeDownload: true
+    };
+  }
+  return unsafeRecord("record", "not_a_resource");
+}
+
+function unsafeRecord(
+  itemKind: PortalRecordItem["itemKind"],
+  skipReason: DownloadSkipReason
+): Pick<PortalRecordItem, "itemKind" | "safeDownload" | "skipReason"> {
+  return {
+    itemKind,
+    safeDownload: false,
+    skipReason
   };
 }
 
