@@ -1,5 +1,12 @@
 # ProPotsdam MCP
 
+[![CI](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml)
+[![Dependency Audit](https://github.com/tintveen/proPotsdamMCP/actions/workflows/dependency-audit.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/dependency-audit.yml)
+[![Security Policy](https://img.shields.io/badge/security-policy-green)](SECURITY.md)
+![Credentials: macOS Keychain](https://img.shields.io/badge/credentials-macOS%20Keychain-blue)
+![Data: local first](https://img.shields.io/badge/data-local%20first-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+
 Unofficial local MCP server for the ProPotsdam/Easysquare customer portal.
 
 It runs on your machine, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to MCP clients through read-first tools. Limited write support is guarded by an explicit confirmation flow and should be treated as experimental.
@@ -119,6 +126,8 @@ Real portal writes are limited to supported actions such as `Meine Daten` / `sav
 </details>
 
 ## Security Notes
+
+Passwords are stored in the macOS Keychain; this project does not store portal passwords in repo files, config files, logs, traces, or exports.
 
 Do not share portal credentials, session cookies, CSRF tokens, raw traces, screenshots with personal data, or exported account data in public issues.
 
