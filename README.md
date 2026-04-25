@@ -5,7 +5,6 @@ Unofficial local MCP server for the ProPotsdam/Easysquare customer portal.
 It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Limited write support is guarded by an explicit confirmation flow and should be treated as experimental.
 
 [![CI](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 ## Install
 
@@ -23,21 +22,7 @@ npx -y propotsdam-mcp auth set
 
 Requirements: Node.js 22+, npm/npx, macOS Keychain, and a ProPotsdam/Easysquare account.
 
-## Commands
-
-```bash
-npx -y propotsdam-mcp --help
-npx -y propotsdam-mcp discover --json
-npx -y propotsdam-mcp actions --json
-```
-
-For the normal ProPotsdam portal, credential setup does not need a base URL. Advanced/debug usage can override it:
-
-```bash
-npx -y propotsdam-mcp auth set --base-url https://portal.example.test
-```
-
-Local config, session cookies, traces, confirmations, and MCP-created exports live under:
+For the normal ProPotsdam portal, credential setup does not need a base URL. Local config, session cookies, traces, confirmations, and MCP-created exports live under:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/
@@ -82,7 +67,3 @@ npm run release:check
 Passwords are stored in the macOS Keychain under the `propotsdam-mcp` service. Do not share portal credentials, session cookies, CSRF tokens, raw traces, screenshots with personal data, or exported account data in public issues.
 
 See [SECURITY.md](SECURITY.md) and [docs/security-check.md](docs/security-check.md).
-
-## License
-
-MIT. See [LICENSE](LICENSE).
