@@ -1,127 +1,84 @@
 #!/usr/bin/env node
-import { Command } from "commander";
-import { ZodError, z } from "zod";
-import { AuthService } from "./auth/auth-service.js";
-import { EXIT_CODES } from "./constants.js";
-import { CliError } from "./errors.js";
-import { PortalClient } from "./portal/portal-client.js";
-import { printOutput } from "./utils/output.js";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createServer } from "./mcp.js";
+import { configureCredentials } from "./portal/portal-client.js";
+import { loadConfig, paths } from "./storage.js";
 
-const formatSchema = z.enum(["text", "json"]).default("text");
-const secondsSchema = z.coerce.number().int().positive().max(600).default(30);
+const [, , command, subcommand] = process.argv;
 
-const authService = new AuthService();
-const portalClient = new PortalClient();
-
-const program = new Command();
-
-program
-  .name("propotsdam")
-  .description("CLI for the ProPotsdam customer portal")
-  .option("--json", "Render the result as JSON");
-
-program
-  .command("auth")
-  .description("Authentication commands")
-  .addCommand(
-    new Command("login")
-      .option("--base-url <url>", "Override the ProPotsdam portal base URL")
-      .option("--timeout <seconds>", "Login timeout in seconds", "300")
-      .action(async (options) => {
-        const timeoutMs = z.coerce.number().int().positive().parse(options.timeout) * 1_000;
-        const result = await authService.login(options.baseUrl, timeoutMs);
-        printOutput(result, "text");
-      })
-  )
-  .addCommand(
-    new Command("status").action(async () => {
-      const result = await authService.status();
-      printOutput(result, getFormat(program.opts()));
-      if (!result.valid) {
-        process.exitCode = EXIT_CODES.AUTH_INVALID;
-      }
-    })
-  )
-  .addCommand(
-    new Command("logout").action(async () => {
-      await authService.logout();
-      printOutput({ ok: true }, getFormat(program.opts()));
-    })
-  );
-
-program
-  .command("inbox")
-  .description("Read portal inbox entries")
-  .addCommand(
-    new Command("list").action(async () => {
-      const result = await portalClient.listInbox();
-      printOutput(result.items, getFormat(program.opts()));
-    })
-  )
-  .addCommand(
-    new Command("get")
-      .argument("<id>", "Inbox item ID")
-      .action(async (id: string) => {
-        const result = await portalClient.getInboxItem(id);
-        printOutput(result, getFormat(program.opts()));
-      })
-  );
-
-program
-  .command("documents")
-  .description("Read and download portal documents")
-  .addCommand(
-    new Command("list").action(async () => {
-      const result = await portalClient.listDocuments();
-      printOutput(result.items, getFormat(program.opts()));
-    })
-  )
-  .addCommand(
-    new Command("download")
-      .argument("<id>", "Document ID")
-      .requiredOption("--out <path>", "Output file path")
-      .action(async (id: string, options) => {
-        const savedPath = await portalClient.downloadDocument(id, options.out);
-        printOutput({ ok: true, path: savedPath }, getFormat(program.opts()));
-      })
-  );
-
-program.command("debug").description("Internal diagnostics").addCommand(
-  new Command("trace")
-    .option("--seconds <seconds>", "How long to record the browser session", "30")
-    .action(async (options) => {
-      const seconds = secondsSchema.parse(options.seconds);
-      const traceFile = await portalClient.debugTrace(seconds);
-      printOutput({ ok: true, traceFile }, getFormat(program.opts()));
-    })
-);
-
-program.exitOverride();
-
-run().catch((error: unknown) => {
-  if (error instanceof CliError) {
-    process.stderr.write(`${error.message}\n`);
-    process.exit(error.exitCode);
-  }
-
-  if (error instanceof ZodError) {
-    process.stderr.write(`${error.issues[0]?.message ?? "Invalid input"}\n`);
-    process.exit(EXIT_CODES.UNKNOWN);
-  }
-
-  if (error instanceof Error && "code" in error && error.code === "commander.helpDisplayed") {
-    process.exit(0);
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exit(EXIT_CODES.UNKNOWN);
-});
-
-async function run(): Promise<void> {
-  await program.parseAsync(process.argv);
+if (!command || command === "serve") {
+  const server = createServer();
+  await server.connect(new StdioServerTransport());
+} else if (command === "auth" && subcommand === "set") {
+  await setCredentials();
+} else if (command === "config" && subcommand === "show") {
+  const config = await loadConfig();
+  output.write(`${JSON.stringify({ ...config, dataDir: paths.dataDir }, null, 2)}\n`);
+} else {
+  output.write(help());
+  process.exitCode = 1;
 }
 
-function getFormat(options: { json?: boolean }) {
-  return formatSchema.parse(options.json ? "json" : "text");
+async function setCredentials(): Promise<void> {
+  const rl = createInterface({ input, output });
+  const current = await loadConfig();
+  const username = (await rl.question(`Username${current.username ? ` [${current.username}]` : ""}: `)).trim() || current.username;
+  if (!username) {
+    rl.close();
+    throw new Error("Username is required.");
+  }
+  const baseUrlInput = (await rl.question(`Base URL [${current.baseUrl}]: `)).trim();
+  const password = await questionHidden("Password: ");
+  rl.close();
+  if (!password) {
+    throw new Error("Password is required.");
+  }
+
+  await configureCredentials({
+    username,
+    password,
+    baseUrl: baseUrlInput || current.baseUrl
+  });
+  output.write(`Credentials stored in macOS Keychain for ${username}.\n`);
+}
+
+async function questionHidden(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    const wasRaw = input.isRaw;
+    input.setRawMode?.(true);
+    output.write(prompt);
+    let value = "";
+    const onData = (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      for (const char of text) {
+        if (char === "\u0003") {
+          output.write("\n");
+          process.exit(130);
+        }
+        if (char === "\r" || char === "\n") {
+          input.off("data", onData);
+          input.setRawMode?.(wasRaw ?? false);
+          output.write("\n");
+          resolve(value);
+          return;
+        }
+        if (char === "\u007f") {
+          value = value.slice(0, -1);
+          continue;
+        }
+        value += char;
+      }
+    };
+    input.on("data", onData);
+  });
+}
+
+function help(): string {
+  return `Usage:
+  propotsdam-mcp serve
+  propotsdam-mcp auth set
+  propotsdam-mcp config show
+`;
 }

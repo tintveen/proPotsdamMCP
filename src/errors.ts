@@ -1,11 +1,10 @@
-export class CliError extends Error {
-  readonly exitCode: number;
-  readonly details?: unknown;
-
-  constructor(message: string, exitCode: number, details?: unknown) {
+export class PortalError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status?: number
+  ) {
     super(message);
-    this.name = "CliError";
-    this.exitCode = exitCode;
-    this.details = details;
+    this.name = "PortalError";
   }
 }

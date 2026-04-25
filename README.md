@@ -1,17 +1,41 @@
-# ProPotsdam CLI
+# ProPotsdam MCP
 
-Eine lokale TypeScript/Node-CLI für das ProPotsdam-Kundenportal mit interaktivem Browser-Login via Playwright.
-
-## Voraussetzungen
-
-- Node.js 22+
-- Ein lokaler Chromium-Start muss möglich sein
+Lokaler MCP-Server fuer das ProPotsdam/Easysquare-Kundenportal. Die erste Version ist macOS-first, nutzt die Apple Keychain fuer Zugangsdaten und stellt read-only Portalwerkzeuge plus lokale Dokument-Downloads bereit.
 
 ## Installation
 
 ```bash
 npm install
+npm run build
 ```
+
+## Credentials einrichten
+
+```bash
+propotsdam-mcp auth set
+```
+
+Das Passwort wird in der Apple Keychain unter dem Service `propotsdam-mcp` gespeichert. Lokale Config, Session-Cookies, Traces und Downloads liegen unter:
+
+```text
+~/Library/Application Support/propotsdam-mcp/
+```
+
+## MCP starten
+
+```bash
+propotsdam-mcp serve
+```
+
+Der Server spricht MCP ueber stdio und bietet diese Tools:
+
+- `propotsdam_auth_status`
+- `propotsdam_auth_login`
+- `propotsdam_auth_logout`
+- `propotsdam_list_inbox`
+- `propotsdam_get_inbox_item`
+- `propotsdam_list_documents`
+- `propotsdam_download_document`
 
 ## Entwicklung
 
@@ -20,28 +44,3 @@ npm run check
 npm run build
 npm test
 ```
-
-## Nutzung
-
-```bash
-node dist/src/cli.js auth login
-node dist/src/cli.js auth status --json
-node dist/src/cli.js inbox list --json
-node dist/src/cli.js inbox get <id> --json
-node dist/src/cli.js documents list --json
-node dist/src/cli.js documents download <id> --out ./document.pdf
-node dist/src/cli.js debug trace --seconds 30
-```
-
-## Architektur
-
-- `src/auth`: Login, Logout, Session-Prüfung
-- `src/transport`: HTTP-Probing und Request-Trace-Aufzeichnung
-- `src/portal`: Fachlogik für Postfach, Dokumente und UI-/Trace-Extraktion
-- `src/cli.ts`: Commander-basierte CLI
-
-## Hinweise
-
-- Es werden keine Passwörter gespeichert, nur Playwright-Session-State.
-- Portal-Daten werden bevorzugt aus Netzwerkantworten extrahiert; UI-Scraping ist der Fallback.
-- Falls das Portal andere Bezeichnungen für Dokumente oder Postfach nutzt, lassen sich die Aliase in der Profil-Datei im App-Datenverzeichnis anpassen.

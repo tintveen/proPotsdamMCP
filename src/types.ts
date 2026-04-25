@@ -1,23 +1,37 @@
 export type PortalSection = "inbox" | "documents";
-export type OutputFormat = "text" | "json";
-export type TraceMode = "login" | "section" | "debug";
+export type AuthState = "authenticated" | "unauthenticated" | "action_required" | "error";
 
-export interface PortalProfile {
+export interface PortalConfig {
   baseUrl: string;
-  appUrl: string;
   apiVersion: string;
-  aliases: Record<PortalSection, string[]>;
-  lastLoginAt?: string;
-  lastValidatedAt?: string;
-  discoveredEndpoints: string[];
-  lastTraceFile?: string;
+  appVersion: string;
+  language: string;
+  username?: string;
+  downloadDir: string;
+  clientId: string;
 }
 
-export interface SessionStatus {
-  valid: boolean;
+export interface StoredSession {
+  cookieJar: unknown;
+  csrfToken?: string;
+  savedAt: string;
+}
+
+export interface AuthResult {
+  state: AuthState;
+  authenticated: boolean;
   userId?: string;
   userFullName?: string;
-  source: "http" | "page" | "none";
+  reason?: string;
+  action?: "set_credentials" | "login_failed" | "accept_terms" | "password_change" | "verification" | "captcha" | "unknown";
+}
+
+export interface PortalService {
+  id?: string;
+  title: string;
+  serviceUrl?: string;
+  xuclass?: string;
+  raw: Record<string, unknown>;
 }
 
 export interface BasePortalItem {
@@ -28,7 +42,8 @@ export interface BasePortalItem {
   subtitle?: string;
   abstract?: string;
   detailUrl?: string;
-  rawSource: "network" | "ui";
+  serviceUrl?: string;
+  rawSource: "services" | "boxlist" | "detail";
 }
 
 export interface InboxItem extends BasePortalItem {
@@ -42,20 +57,20 @@ export interface InboxItem extends BasePortalItem {
 export interface DocumentItem extends BasePortalItem {
   filename?: string;
   downloadable: boolean;
-}
-
-export interface TraceRecord {
-  timestamp: string;
-  url: string;
-  method: string;
-  status: number;
-  resourceType: string;
-  contentType?: string;
-  bodyText?: string;
+  resourceId?: string;
+  resourceOrigin?: string;
+  mimeType?: string;
 }
 
 export interface ListResult<T> {
   items: T[];
-  source: "network" | "ui";
-  traceFile?: string;
+  source: "services" | "boxlist";
+}
+
+export interface DownloadResult {
+  ok: true;
+  path: string;
+  filename: string;
+  mimeType?: string;
+  document: DocumentItem;
 }

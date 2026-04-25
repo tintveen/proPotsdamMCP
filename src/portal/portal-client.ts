@@ -1,224 +1,335 @@
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { EXIT_CODES } from "../constants.js";
-import { CliError } from "../errors.js";
-import { logger } from "../logger.js";
-import { loadProfile, storagePaths } from "../storage.js";
-import { closeBrowserSession, gotoApp, openBrowserSession, waitForPortalIdle } from "../browser.js";
-import { TraceRecorder } from "../transport/trace-recorder.js";
+import {
+  API5_SERVICES_PATH,
+  AUTHENTICATE_PATH,
+  DEFAULT_APP_VERSION,
+  LOGGED_SERVICES_PATH
+} from "../constants.js";
+import type { CredentialStore } from "../credentials.js";
+import { KeytarCredentialStore } from "../credentials.js";
+import { PortalError } from "../errors.js";
+import { CookieSession } from "../http/cookie-session.js";
+import {
+  deleteSession,
+  loadConfig,
+  loadSession,
+  saveConfig,
+  saveSession
+} from "../storage.js";
 import type {
+  AuthResult,
   DocumentItem,
+  DownloadResult,
   InboxItem,
   ListResult,
-  PortalProfile,
+  PortalConfig,
   PortalSection
 } from "../types.js";
-import { extractSectionItemsFromTraces } from "./response-parsers.js";
-import { extractItemsFromUi } from "./ui-extractors.js";
+import { formEncodeSapFfield } from "./encoding.js";
+import {
+  classifyAuthFailure,
+  extractDocumentItems,
+  extractInboxItems,
+  extractServices,
+  findSectionServices,
+  normalizeDetailText,
+  parseSessionStatus
+} from "./parsers.js";
 
 export class PortalClient {
-  async listInbox(): Promise<ListResult<InboxItem>> {
-    const result = await this.listSection("inbox");
+  constructor(
+    private readonly credentialStore: CredentialStore = new KeytarCredentialStore(),
+    private readonly fetchImpl: typeof fetch = fetch
+  ) {}
+
+  async status(): Promise<AuthResult> {
+    const config = await loadConfig();
+    const session = new CookieSession(config, await loadSession(), this.fetchImpl);
+    return this.validateSession(config, session);
+  }
+
+  async login(): Promise<AuthResult> {
+    const config = await loadConfig();
+    if (!config.username) {
+      return {
+        state: "action_required",
+        authenticated: false,
+        action: "set_credentials",
+        reason: "No username is configured. Run `propotsdam-mcp auth set` first."
+      };
+    }
+
+    const password = await this.credentialStore.getPassword(config.username);
+    if (!password) {
+      return {
+        state: "action_required",
+        authenticated: false,
+        action: "set_credentials",
+        reason: "No password was found in the macOS Keychain. Run `propotsdam-mcp auth set`."
+      };
+    }
+
+    const session = new CookieSession(config, null, this.fetchImpl);
+    const response = await session.post(
+      `${AUTHENTICATE_PATH}?api=${encodeURIComponent(config.apiVersion)}&sap-language=${encodeURIComponent(config.language)}`,
+      formEncodeSapFfield({
+        user: config.username.toUpperCase(),
+        password
+      }),
+      {
+        headers: {
+          "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "X-CSRF-Token": "fetch"
+        }
+      }
+    );
+
+    if (!response.ok) {
+      return classifyAuthFailure(response.status, response.body);
+    }
+
+    const validated = await this.validateSession(config, session);
+    if (validated.authenticated) {
+      await saveSession(session.serialize());
+      return validated;
+    }
+
+    const fallback = parseSessionStatus(response.body, response.contentType);
+    if (fallback.authenticated) {
+      await saveSession(session.serialize());
+      return fallback;
+    }
+
     return {
-      items: result.items as InboxItem[],
-      source: result.source,
-      traceFile: result.traceFile
+      state: "error",
+      authenticated: false,
+      action: "unknown",
+      reason: "Login request succeeded, but the portal did not expose an authenticated session marker."
     };
+  }
+
+  async logout(): Promise<{ ok: true }> {
+    const config = await loadConfig();
+    const session = new CookieSession(config, await loadSession(), this.fetchImpl);
+    await session.get(`${API5_SERVICES_PATH}/logoff`).catch(() => undefined);
+    await deleteSession();
+    return { ok: true };
+  }
+
+  async listInbox(): Promise<ListResult<InboxItem>> {
+    return this.listSection("inbox") as Promise<ListResult<InboxItem>>;
   }
 
   async getInboxItem(id: string): Promise<InboxItem> {
-    const profile = await loadProfile();
-    const { session, recorder } = await this.openTrackedSession(profile, "section", true);
-
-    try {
-      await gotoApp(session.page, profile);
-      await navigateToSection(session.page, profile, "inbox");
-      const items = await this.extractSectionItems(session.page, recorder, "inbox");
-      const match = items.find((item) => item.id === id);
-      if (!match) {
-        throw new CliError(`Inbox item '${id}' was not found.`, EXIT_CODES.PORTAL_CHANGED);
-      }
-
-      await clickBestEffort(session.page, [match.id, match.title]);
-      await waitForPortalIdle(session.page);
-
-      const detailText = await session.page.evaluate(() => document.body?.innerText?.slice(0, 4000) ?? "");
-      return {
-        ...(match as InboxItem),
-        detailText
-      };
-    } finally {
-      recorder.detach(session.context);
-      await closeBrowserSession(session);
+    const { items } = await this.listInbox();
+    const match = items.find((item) => item.id === id || item.title === id);
+    if (!match) {
+      throw new PortalError(`Inbox item '${id}' was not found.`, "NOT_FOUND", 404);
     }
-  }
 
-  async listDocuments(): Promise<ListResult<DocumentItem>> {
-    const result = await this.listSection("documents");
+    const config = await loadConfig();
+    const session = await this.authenticatedSession(config);
+    const url = this.buildActionUrl(config, match.serviceUrl ?? match.detailUrl, match.id, "get");
+    if (!url) {
+      return match;
+    }
+
+    const response = await session.get(url);
     return {
-      items: result.items as DocumentItem[],
-      source: result.source,
-      traceFile: result.traceFile
+      ...match,
+      detailText: normalizeDetailText(response.body, response.contentType)
     };
   }
 
-  async downloadDocument(id: string, outPath: string): Promise<string> {
-    const profile = await loadProfile();
-    const { session, recorder } = await this.openTrackedSession(profile, "section", true);
-
-    try {
-      await gotoApp(session.page, profile);
-      await navigateToSection(session.page, profile, "documents");
-      const items = await this.extractSectionItems(session.page, recorder, "documents");
-      const match = items.find((item) => item.id === id);
-      if (!match) {
-        throw new CliError(`Document '${id}' was not found.`, EXIT_CODES.PORTAL_CHANGED);
-      }
-
-      const download = session.page.waitForEvent("download", { timeout: 15_000 }).catch(() => null);
-      await clickBestEffort(session.page, [match.id, match.title, "Download", "Herunterladen"]);
-      const result = await download;
-      if (!result) {
-        throw new CliError(
-          `No browser download was triggered for document '${id}'.`,
-          EXIT_CODES.DOWNLOAD_FAILED
-        );
-      }
-
-      await result.saveAs(path.resolve(outPath));
-      return path.resolve(outPath);
-    } finally {
-      recorder.detach(session.context);
-      await closeBrowserSession(session);
-    }
+  async listDocuments(): Promise<ListResult<DocumentItem>> {
+    return this.listSection("documents") as Promise<ListResult<DocumentItem>>;
   }
 
-  async debugTrace(seconds: number): Promise<string> {
-    const profile = await loadProfile();
-    const { session, recorder, traceFile } = await this.openTrackedSession(profile, "debug", false);
-
-    try {
-      await gotoApp(session.page, profile);
-      logger.info(
-        `Trace recording started. You can interact with the browser for the next ${seconds} seconds.`
-      );
-      await session.page.waitForTimeout(seconds * 1000);
-      await recorder.save(traceFile);
-      return traceFile;
-    } finally {
-      recorder.detach(session.context);
-      await closeBrowserSession(session);
+  async downloadDocument(id: string): Promise<DownloadResult> {
+    const config = await loadConfig();
+    const { items } = await this.listDocuments();
+    const match = items.find((item) => item.id === id || item.title === id || item.filename === id);
+    if (!match) {
+      throw new PortalError(`Document '${id}' was not found.`, "NOT_FOUND", 404);
     }
+    if (!match.downloadable) {
+      throw new PortalError(`Document '${id}' is not marked as downloadable.`, "NOT_DOWNLOADABLE", 410);
+    }
+
+    const session = await this.authenticatedSession(config);
+    const downloadUrl =
+      match.detailUrl && /^https?:\/\//i.test(match.detailUrl)
+        ? match.detailUrl
+        : this.buildActionUrl(config, match.serviceUrl ?? match.detailUrl, match.resourceId ?? match.id, "get", match.resourceOrigin);
+    if (!downloadUrl) {
+      throw new PortalError(`No download URL could be built for document '${id}'.`, "DOWNLOAD_URL_MISSING");
+    }
+
+    const response = await session.download(downloadUrl);
+    if (!response.ok) {
+      throw new PortalError(`Download failed with HTTP ${response.status}.`, "DOWNLOAD_FAILED", response.status);
+    }
+
+    const filename = safeFilename(match.filename ?? match.title);
+    const outputPath = await resolveSafeDownloadPath(config.downloadDir, filename);
+    await writeFile(outputPath, response.body);
+    await saveSession(session.serialize());
+
+    return {
+      ok: true,
+      path: outputPath,
+      filename,
+      mimeType: response.contentType ?? match.mimeType,
+      document: match
+    };
   }
 
   private async listSection(section: PortalSection): Promise<ListResult<InboxItem | DocumentItem>> {
-    const profile = await loadProfile();
-    const { session, recorder, traceFile } = await this.openTrackedSession(profile, "section", true);
+    const config = await loadConfig();
+    const session = await this.authenticatedSession(config);
+    const servicesResponse = await this.fetchServices(config, session);
+    const services = extractServices(servicesResponse.body, servicesResponse.contentType);
+    const sectionServices = findSectionServices(services, section);
+    const collected: (InboxItem | DocumentItem)[] = [];
 
-    try {
-      await gotoApp(session.page, profile);
-      await navigateToSection(session.page, profile, section);
-      const items = await this.extractSectionItems(session.page, recorder, section);
-      await recorder.save(traceFile);
-
-      return {
-        items,
-        source: items[0]?.rawSource ?? "ui",
-        traceFile
-      };
-    } finally {
-      recorder.detach(session.context);
-      await closeBrowserSession(session);
-    }
-  }
-
-  private async extractSectionItems(
-    page: import("playwright").Page,
-    recorder: TraceRecorder,
-    section: PortalSection
-  ): Promise<(InboxItem | DocumentItem)[]> {
-    const fromNetwork = extractSectionItemsFromTraces(section, recorder.getRecords());
-    if (fromNetwork.length > 0) {
-      return fromNetwork;
+    for (const service of sectionServices) {
+      if (!service.serviceUrl) {
+        continue;
+      }
+      const boxlistUrl = this.buildBoxlistUrl(config, service.serviceUrl, service.xuclass);
+      const response = await session.get(boxlistUrl);
+      const items = section === "inbox"
+        ? extractInboxItems(response.body, response.contentType)
+        : extractDocumentItems(response.body, response.contentType);
+      collected.push(...items.map((item) => ({ ...item, serviceUrl: service.serviceUrl })));
     }
 
-    const fromUi = await extractItemsFromUi(page, section);
-    if (fromUi.length > 0) {
-      return fromUi;
+    if (collected.length > 0) {
+      await saveSession(session.serialize());
+      return { items: dedupeItems(collected), source: "boxlist" };
     }
 
-    throw new CliError(
-      `Could not extract ${section} entries from network responses or the UI. Run \`propotsdam debug trace\` to inspect the portal.`,
-      EXIT_CODES.PORTAL_CHANGED
-    );
+    const fallbackItems = section === "inbox"
+      ? extractInboxItems(servicesResponse.body, servicesResponse.contentType)
+      : extractDocumentItems(servicesResponse.body, servicesResponse.contentType);
+    await saveSession(session.serialize());
+    return { items: fallbackItems, source: "services" };
   }
 
-  private async openTrackedSession(profile: PortalProfile, mode: "section" | "debug", headless: boolean) {
-    const session = await openBrowserSession({
-      headless,
-      storageState: storagePaths.storageStateFile
-    });
-    const recorder = new TraceRecorder(profile.baseUrl, mode);
-    recorder.attach(session.context);
-    const traceFile = path.join(storagePaths.tracesDir, `${mode}-${Date.now()}.json`);
-    return { session, recorder, traceFile };
-  }
-}
-
-async function navigateToSection(
-  page: import("playwright").Page,
-  profile: PortalProfile,
-  section: PortalSection
-): Promise<void> {
-  const aliases = profile.aliases[section];
-  for (const alias of aliases) {
-    const clicked = await clickLocatorCandidates(page, alias);
-    if (clicked) {
-      await waitForPortalIdle(page);
-      return;
+  private async authenticatedSession(config: PortalConfig): Promise<CookieSession> {
+    const session = new CookieSession(config, await loadSession(), this.fetchImpl);
+    const status = await this.validateSession(config, session);
+    if (status.authenticated) {
+      return session;
     }
+
+    const login = await this.login();
+    if (!login.authenticated) {
+      throw new PortalError(login.reason ?? "Authentication required.", login.action ?? "AUTH_REQUIRED");
+    }
+    return new CookieSession(config, await loadSession(), this.fetchImpl);
   }
 
-  const menuButton = page.getByRole("button", { name: /seitenmenü|profilmenü|menü/i }).first();
-  if (await menuButton.isVisible().catch(() => false)) {
-    await menuButton.click();
-    await waitForPortalIdle(page);
-    for (const alias of aliases) {
-      const clicked = await clickLocatorCandidates(page, alias);
-      if (clicked) {
-        await waitForPortalIdle(page);
-        return;
+  private async validateSession(config: PortalConfig, session: CookieSession): Promise<AuthResult> {
+    const response = await this.fetchServices(config, session).catch(() => null);
+    if (!response?.ok) {
+      return { state: "unauthenticated", authenticated: false };
+    }
+    return parseSessionStatus(response.body, response.contentType);
+  }
+
+  private async fetchServices(config: PortalConfig, session: CookieSession) {
+    const candidates = [
+      `${LOGGED_SERVICES_PATH}?api=${encodeURIComponent(config.apiVersion)}`,
+      `${API5_SERVICES_PATH}?api=${encodeURIComponent(config.apiVersion)}`
+    ];
+
+    let lastResponse: Awaited<ReturnType<CookieSession["get"]>> | null = null;
+    for (const candidate of candidates) {
+      const response = await session.get(candidate);
+      lastResponse = response;
+      if (response.ok) {
+        return response;
       }
     }
+
+    return lastResponse ?? session.get(candidates[0] ?? LOGGED_SERVICES_PATH);
   }
 
-  throw new CliError(
-    `Could not find a visible portal entry for ${section}. Adjust aliases in ${storagePaths.profileFile} if needed.`,
-    EXIT_CODES.PORTAL_CHANGED
-  );
+  private buildBoxlistUrl(config: PortalConfig, serviceUrl: string, xuclass?: string): string {
+    const url = new URL(serviceUrl, config.baseUrl);
+    url.searchParams.set("command", "action");
+    url.searchParams.set("name", "boxlist");
+    url.searchParams.set("api", config.apiVersion);
+    url.searchParams.set("head-oppc-version", config.appVersion || DEFAULT_APP_VERSION);
+    if (xuclass && !url.searchParams.has("application")) {
+      url.searchParams.set("application", xuclass);
+    }
+    return url.toString();
+  }
+
+  private buildActionUrl(
+    config: PortalConfig,
+    serviceUrl: string | undefined,
+    id: string,
+    name: string,
+    resourceOrigin?: string
+  ): string | undefined {
+    if (!serviceUrl) {
+      return undefined;
+    }
+    const url = new URL(serviceUrl, config.baseUrl);
+    url.searchParams.set("command", "action");
+    url.searchParams.set("id", id);
+    url.searchParams.set("name", name);
+    url.searchParams.set("api", config.apiVersion);
+    url.searchParams.set("head-oppc-version", config.appVersion || DEFAULT_APP_VERSION);
+    if (resourceOrigin) {
+      url.searchParams.set("resourceOrigin", resourceOrigin);
+    }
+    return url.toString();
+  }
 }
 
-async function clickLocatorCandidates(page: import("playwright").Page, text: string): Promise<boolean> {
-  const candidates = [
-    page.getByRole("button", { name: new RegExp(text, "i") }).first(),
-    page.getByRole("link", { name: new RegExp(text, "i") }).first(),
-    page.getByText(new RegExp(text, "i")).first()
-  ];
-
-  for (const candidate of candidates) {
-    if (await candidate.isVisible().catch(() => false)) {
-      await candidate.click();
-      return true;
-    }
-  }
-
-  return false;
+export async function configureCredentials(options: {
+  username: string;
+  password: string;
+  baseUrl?: string;
+  credentialStore?: CredentialStore;
+}): Promise<void> {
+  const config = await loadConfig();
+  const nextConfig = {
+    ...config,
+    username: options.username,
+    baseUrl: options.baseUrl ?? config.baseUrl
+  };
+  await saveConfig(nextConfig);
+  await (options.credentialStore ?? new KeytarCredentialStore()).setPassword(options.username, options.password);
 }
 
-async function clickBestEffort(page: import("playwright").Page, texts: string[]): Promise<void> {
-  for (const text of texts) {
-    const clicked = await clickLocatorCandidates(page, text);
-    if (clicked) {
-      return;
+async function resolveSafeDownloadPath(downloadDir: string, filename: string): Promise<string> {
+  await mkdir(downloadDir, { recursive: true });
+  const resolvedDir = path.resolve(downloadDir);
+  const resolvedFile = path.resolve(resolvedDir, filename);
+  if (!resolvedFile.startsWith(`${resolvedDir}${path.sep}`)) {
+    throw new PortalError("Download path escapes the configured download directory.", "INVALID_DOWNLOAD_PATH");
+  }
+  return resolvedFile;
+}
+
+function safeFilename(input: string): string {
+  const cleaned = input.replace(/[/:\\?%*"<>|]/g, "_").trim() || "document";
+  return path.extname(cleaned) ? cleaned : `${cleaned}.pdf`;
+}
+
+function dedupeItems<T extends { id: string; title: string }>(items: T[]): T[] {
+  const seen = new Map<string, T>();
+  for (const item of items) {
+    const key = `${item.id}::${item.title}`;
+    if (!seen.has(key)) {
+      seen.set(key, item);
     }
   }
+  return [...seen.values()];
 }

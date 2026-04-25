@@ -1,7 +1,5 @@
-node_modules
-dist
+node_modules/
+dist/
+coverage/
 .DS_Store
-.env
-coverage
-playwright/.auth
-tmp
+*.log

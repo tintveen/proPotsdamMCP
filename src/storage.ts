@@ -1,69 +1,78 @@
-import envPaths from "env-paths";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { APP_NAME, DEFAULT_ALIASES, DEFAULT_API_VERSION, DEFAULT_APP_URL, DEFAULT_BASE_URL } from "./constants.js";
-import type { PortalProfile } from "./types.js";
+import {
+  APP_NAME,
+  DEFAULT_API_VERSION,
+  DEFAULT_APP_VERSION,
+  DEFAULT_BASE_URL,
+  DEFAULT_LANGUAGE
+} from "./constants.js";
+import type { PortalConfig, StoredSession } from "./types.js";
 
-const paths = envPaths(APP_NAME, { suffix: "" });
+const defaultDataDir = path.join(process.env.HOME ?? ".", "Library", "Application Support", APP_NAME);
+const dataDir = process.env.PROPPOTSDAM_DATA_DIR ?? defaultDataDir;
 
-export const storagePaths = {
-  dataDir: paths.data,
-  profileFile: path.join(paths.data, "profile.json"),
-  storageStateFile: path.join(paths.data, "storage-state.json"),
-  tracesDir: path.join(paths.data, "traces")
+export const paths = {
+  dataDir,
+  configFile: path.join(dataDir, "config.json"),
+  sessionFile: path.join(dataDir, "session.json"),
+  tracesDir: path.join(dataDir, "traces"),
+  downloadsDir: path.join(dataDir, "downloads")
 };
 
-export function createDefaultProfile(): PortalProfile {
-  return {
-    baseUrl: DEFAULT_BASE_URL,
-    appUrl: DEFAULT_APP_URL,
-    apiVersion: DEFAULT_API_VERSION,
-    aliases: {
-      inbox: [...DEFAULT_ALIASES.inbox],
-      documents: [...DEFAULT_ALIASES.documents]
-    },
-    discoveredEndpoints: []
-  };
-}
-
 export async function ensureStorageDirs(): Promise<void> {
-  await mkdir(storagePaths.dataDir, { recursive: true });
-  await mkdir(storagePaths.tracesDir, { recursive: true });
+  await mkdir(paths.dataDir, { recursive: true });
+  await mkdir(paths.tracesDir, { recursive: true });
+  await mkdir(paths.downloadsDir, { recursive: true });
 }
 
-export async function loadProfile(): Promise<PortalProfile> {
+export async function loadConfig(): Promise<PortalConfig> {
   await ensureStorageDirs();
   try {
-    const raw = await readFile(storagePaths.profileFile, "utf8");
-    const parsed = JSON.parse(raw) as Partial<PortalProfile>;
+    const raw = await readFile(paths.configFile, "utf8");
+    const parsed = JSON.parse(raw) as Partial<PortalConfig>;
     return {
-      ...createDefaultProfile(),
+      ...defaultConfig(),
       ...parsed,
-      aliases: {
-        inbox: parsed.aliases?.inbox ?? [...DEFAULT_ALIASES.inbox],
-        documents: parsed.aliases?.documents ?? [...DEFAULT_ALIASES.documents]
-      },
-      discoveredEndpoints: parsed.discoveredEndpoints ?? []
+      downloadDir: parsed.downloadDir ?? paths.downloadsDir,
+      clientId: parsed.clientId ?? randomUUID()
     };
   } catch {
-    return createDefaultProfile();
+    return defaultConfig();
   }
 }
 
-export async function saveProfile(profile: PortalProfile): Promise<void> {
+export async function saveConfig(config: PortalConfig): Promise<void> {
   await ensureStorageDirs();
-  await writeFile(storagePaths.profileFile, JSON.stringify(profile, null, 2));
+  await writeFile(paths.configFile, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
-export async function hasStoredSession(): Promise<boolean> {
+export async function loadSession(): Promise<StoredSession | null> {
+  await ensureStorageDirs();
   try {
-    await readFile(storagePaths.storageStateFile, "utf8");
-    return true;
+    return JSON.parse(await readFile(paths.sessionFile, "utf8")) as StoredSession;
   } catch {
-    return false;
+    return null;
   }
 }
 
-export async function deleteStoredSession(): Promise<void> {
-  await rm(storagePaths.storageStateFile, { force: true });
+export async function saveSession(session: StoredSession): Promise<void> {
+  await ensureStorageDirs();
+  await writeFile(paths.sessionFile, `${JSON.stringify(session, null, 2)}\n`, "utf8");
+}
+
+export async function deleteSession(): Promise<void> {
+  await rm(paths.sessionFile, { force: true });
+}
+
+export function defaultConfig(): PortalConfig {
+  return {
+    baseUrl: DEFAULT_BASE_URL,
+    apiVersion: DEFAULT_API_VERSION,
+    appVersion: DEFAULT_APP_VERSION,
+    language: DEFAULT_LANGUAGE,
+    downloadDir: paths.downloadsDir,
+    clientId: randomUUID()
+  };
 }
