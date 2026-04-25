@@ -1,4 +1,4 @@
-# ProPotsdam MCP
+# proPotsdamMCP
 
 ![ProPotsdam MCP banner](proPotsdamMCPBanner.png)
 
