@@ -1,40 +1,105 @@
 # ProPotsdam MCP
 
-Lokaler MCP-Server fuer das ProPotsdam/Easysquare-Kundenportal. Die erste Version ist macOS-first, nutzt die Apple Keychain fuer Zugangsdaten und stellt read-only Werkzeuge fuer auslesbare Portal-Daten sowie prepare-only Werkzeuge fuer Portal-Aktionsentwuerfe bereit.
+Unofficial local MCP server for the ProPotsdam/Easysquare customer portal.
 
-## Installation
+It runs on your machine, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to MCP clients through read-first tools. Limited write support is guarded by an explicit confirmation flow and should be treated as experimental.
+
+```bash
+npm install
+npm run build
+npm run auth:set
+node dist/cli.js serve
+```
+
+## What It Does
+
+- Authenticates against the ProPotsdam/Easysquare portal with credentials stored locally.
+- Discovers visible portal services and readable account areas.
+- Reads inbox items and portal records exposed by the current account.
+- Prepares portal action drafts for review.
+- Supports a limited confirmation-based commit flow for known safe write actions.
+
+This project is macOS-first because it uses Apple Keychain through `keytar`.
+
+## Requirements
+
+- Node.js 22 or newer
+- npm
+- macOS Keychain access
+- A ProPotsdam/Easysquare portal account
+
+## Setup
+
+Install dependencies and build the CLI:
 
 ```bash
 npm install
 npm run build
 ```
 
-## Credentials einrichten
+Store credentials:
 
 ```bash
-npm run build
 npm run auth:set
 ```
 
-`auth:set` fragt nur Benutzername und Passwort ab. Fuer ProPotsdam wird die Standard-Base-URL verwendet; ein Override ist nur fuer Debug/Advanced-Faelle noetig:
+The command asks for username and password. For the normal ProPotsdam portal, no base URL is needed. Advanced/debug usage can override it:
 
 ```bash
 npm run auth:set -- --base-url https://portal.example.test
 ```
 
-Das Passwort wird in der Apple Keychain unter dem Service `propotsdam-mcp` gespeichert. Lokale Config, Session-Cookies, Traces und MCP-erzeugte Exporte liegen unter:
+The password is stored in the macOS Keychain under the service name `propotsdam-mcp`. Local config, session cookies, traces, confirmations, and MCP-created exports live here:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/
 ```
 
-## MCP starten
+## Run The MCP Server
+
+From a local checkout:
+
+```bash
+node dist/cli.js serve
+```
+
+After linking or installing the package as a CLI, the binary is:
 
 ```bash
 propotsdam-mcp serve
 ```
 
-Der Server spricht MCP ueber stdio und bietet diese Tools:
+The server uses MCP over stdio, so configure your MCP client to run one of those commands.
+
+## Discovery
+
+Generate a capability report for the configured account:
+
+```bash
+npm run discover -- --json
+```
+
+The report describes visible portal services, recognized areas, boxlist availability, item counts, and readable portal data. A redacted trace is also written under:
+
+```text
+~/Library/Application Support/propotsdam-mcp/traces/
+```
+
+## Portal Actions
+
+Inspect action-like portal surfaces:
+
+```bash
+npm run build
+node dist/cli.js actions --json
+```
+
+Action handling is intentionally conservative. `propotsdam_prepare_portal_action` creates a local draft, accepts only known editable fields, and reports locked or unknown fields as validation problems.
+
+Real portal writes are limited to supported actions such as `Meine Daten` / `save_partner`. They require two MCP steps: request a short-lived confirmation with a diff, then commit with the returned confirmation ID. Unsupported actions remain prepare-only.
+
+<details>
+<summary>MCP tools</summary>
 
 - `propotsdam_auth_status`
 - `propotsdam_auth_login`
@@ -48,27 +113,18 @@ Der Server spricht MCP ueber stdio und bietet diese Tools:
 - `propotsdam_list_portal_actions`
 - `propotsdam_get_portal_action`
 - `propotsdam_prepare_portal_action`
+- `propotsdam_request_portal_action_commit`
+- `propotsdam_commit_portal_action`
 
-## Account-Capability-Map
+</details>
 
-```bash
-npm run discover -- --json
-```
+## Security Notes
 
-Der Discovery-Lauf meldet die sichtbaren Portal-Services, erkannte Bereiche, Boxlist-Verfuegbarkeit, Item-Zaehler und lesbare Portal-Daten. Ein redigierter Report wird zusaetzlich unter `~/Library/Application Support/propotsdam-mcp/traces/` abgelegt. ProPotsdam stellt in der aktuellen Account-Abbildung keine bestaetigte Datei-Freigabe als eigene Portal-Funktion dar; lokale Dateien waeren MCP-erzeugte Exporte aus bereits auslesbaren Daten.
+Do not share portal credentials, session cookies, CSRF tokens, raw traces, screenshots with personal data, or exported account data in public issues.
 
-## Portal-Aktionen
+See [SECURITY.md](SECURITY.md) and [docs/security-check.md](docs/security-check.md) for the reporting policy and the pre-publication security checklist.
 
-```bash
-npm run build
-node dist/cli.js actions --json
-```
-
-Die Action-Map meldet Portal-Oberflaechen, die nach Zustand veraendernden Formularen oder Aktionen aussehen. Dafuer werden neben Boxlists auch lesbare Detail-Formulare geprueft, zum Beispiel `Meine Daten` mit `save_partner`. `propotsdam_prepare_portal_action` erzeugt nur einen lokalen Entwurf zur Pruefung, uebernimmt nur bekannte editierbare Felder und meldet gesperrte oder unbekannte Felder als Validierungsproblem.
-
-Echte Portal-Schreibvorgaenge sind in dieser Version auf `Meine Daten` / `save_partner` begrenzt. Dafuer gilt ein zweistufiger MCP-Flow: `propotsdam_request_portal_action_commit` erzeugt eine kurzlebige Confirmation mit Diff und sendet nichts; erst `propotsdam_commit_portal_action` mit dieser Confirmation-ID fuehrt den Schreibvorgang aus. Alle anderen Aktionen bleiben prepare-only.
-
-## Entwicklung
+## Development
 
 ```bash
 npm run check
@@ -76,8 +132,23 @@ npm run build
 npm test
 ```
 
-Live-Read-Pass gegen ein echtes Konto:
+Live read tests are opt-in and require a real configured account:
 
 ```bash
 PROPPOTSDAM_LIVE_TEST=1 npm run test:live
 ```
+
+Before publishing or making the repository public, run:
+
+```bash
+npm run check
+npm test
+npm audit
+npm audit --omit=dev
+git diff --check
+npm pack --dry-run
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

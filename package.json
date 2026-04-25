@@ -6,6 +6,21 @@
   "bin": {
     "propotsdam-mcp": "./dist/cli.js"
   },
+  "files": [
+    "dist/",
+    "docs/security-check.md",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tintveen/proPotsdamMCP.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tintveen/proPotsdamMCP/issues"
+  },
+  "homepage": "https://github.com/tintveen/proPotsdamMCP#readme",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",
