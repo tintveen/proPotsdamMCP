@@ -1,5 +1,7 @@
 # ProPotsdam MCP
 
+![ProPotsdam MCP banner](proPotsdamMCPBanner.png)
+
 [![CI](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml)
 [![Dependency Audit](https://github.com/tintveen/proPotsdamMCP/actions/workflows/dependency-audit.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/dependency-audit.yml)
 [![Security Policy](https://img.shields.io/badge/security-policy-green)](SECURITY.md)

@@ -136,7 +136,7 @@ describe("CLI", () => {
         },
         question: async (prompt: string) => {
           prompts.push(prompt);
-          return "info@tintveen.com";
+          return "user@example.test";
         },
         questionHidden: async (prompt: string) => {
           prompts.push(prompt);
@@ -164,7 +164,7 @@ describe("CLI", () => {
     expect(prompts).toEqual(["Username: ", "Password: "]);
     expect(saved).toEqual([
       {
-        username: "info@tintveen.com",
+        username: "user@example.test",
         password: "super-secret",
         baseUrl: "https://propotsdam-kundenportal.easysquare.com"
       }
@@ -181,7 +181,7 @@ describe("CLI", () => {
       ["node", "propotsdam-mcp", "auth", "set", "--base-url", "https://portal.example.test"],
       {
         write: () => undefined,
-        question: async () => "info@tintveen.com",
+        question: async () => "user@example.test",
         questionHidden: async () => "super-secret"
       },
       undefined,
@@ -203,7 +203,7 @@ describe("CLI", () => {
 
     expect(saved).toEqual([
       {
-        username: "info@tintveen.com",
+        username: "user@example.test",
         password: "super-secret",
         baseUrl: "https://portal.example.test"
       }
@@ -219,13 +219,13 @@ describe("CLI", () => {
       ["node", "propotsdam-mcp", "auth", "set"],
       {
         write: () => undefined,
-        question: async () => "info@tintveen.com",
+        question: async () => "user@example.test",
         questionHidden: async () => "super-secret"
       },
       undefined,
       {
         loadConfig: async () => ({
-          baseUrl: "info@tintveen.com",
+          baseUrl: "user@example.test",
           apiVersion: "6.262",
           appVersion: "6.262.8",
           language: "de",
@@ -241,7 +241,7 @@ describe("CLI", () => {
 
     expect(saved).toEqual([
       {
-        username: "info@tintveen.com",
+        username: "user@example.test",
         password: "super-secret",
         baseUrl: DEFAULT_BASE_URL
       }

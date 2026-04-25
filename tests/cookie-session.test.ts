@@ -5,7 +5,7 @@ import type { PortalConfig } from "../src/types.js";
 describe("CookieSession", () => {
   it("names invalid config.baseUrl values in URL errors", () => {
     const config: PortalConfig = {
-      baseUrl: "info@tintveen.com",
+      baseUrl: "user@example.test",
       apiVersion: "6.262",
       appVersion: "6.262.8",
       language: "de",

@@ -72,13 +72,13 @@ describe("config repair", () => {
     const { paths, loadConfig } = await import("../src/storage.js");
     const { DEFAULT_BASE_URL } = await import("../src/constants.js");
     await writeFile(paths.configFile, JSON.stringify({
-      username: "info@tintveen.com",
-      baseUrl: "info@tintveen.com"
+      username: "user@example.test",
+      baseUrl: "user@example.test"
     }));
 
     const config = await loadConfig();
     expect(config).toMatchObject({
-      username: "info@tintveen.com",
+      username: "user@example.test",
       baseUrl: DEFAULT_BASE_URL
     });
   });
@@ -91,14 +91,14 @@ describe("config repair", () => {
 
     const { paths, loadConfig } = await import("../src/storage.js");
     await writeFile(paths.configFile, JSON.stringify({
-      username: "info@tintveen.com",
+      username: "user@example.test",
       baseUrl: "https://portal.example.test",
       downloadDir: "/tmp/legacy-downloads"
     }));
 
     const config = await loadConfig();
     expect(config).toMatchObject({
-      username: "info@tintveen.com",
+      username: "user@example.test",
       exportDir: "/tmp/legacy-downloads"
     });
     expect(JSON.stringify(config)).not.toContain("downloadDir");
@@ -112,7 +112,7 @@ describe("config repair", () => {
 
     const { paths, loadConfig } = await import("../src/storage.js");
     await writeFile(paths.configFile, JSON.stringify({
-      username: "info@tintveen.com",
+      username: "user@example.test",
       baseUrl: "https://portal.example.test",
       exportDir: path.join(tempDir, "downloads")
     }));

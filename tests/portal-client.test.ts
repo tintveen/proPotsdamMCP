@@ -227,7 +227,7 @@ describe("PortalClient HTTP flow", () => {
     const map = await client.discoverWriteActions();
     const profileActions = await client.listPortalActions({ xuclass: "ESQ_IA_PART", source: "detail" });
     const prepared = await client.preparePortalAction("save_partner", {
-      phone_ref: "+49331234567",
+      phone_ref: "+15550100001",
       mail: "new@example.test",
       unknown_field: "ignored"
     });
@@ -242,8 +242,8 @@ describe("PortalClient HTTP flow", () => {
       recordTitle: "Meine Daten",
       preparable: true,
       fields: expect.arrayContaining([
-        expect.objectContaining({ name: "phone_ref", value: "+4916097977656", editable: true }),
-        expect.objectContaining({ name: "mail", value: "info@tintveen.com", editable: false })
+        expect.objectContaining({ name: "phone_ref", value: "+15550100000", editable: true }),
+        expect.objectContaining({ name: "mail", value: "user@example.test", editable: false })
       ])
     });
     expect(prepared.ok).toBe(false);
@@ -254,8 +254,8 @@ describe("PortalClient HTTP flow", () => {
     expect(prepared.draft.fields).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: "phone_ref",
-        currentValue: "+4916097977656",
-        proposedValue: "+49331234567"
+        currentValue: "+15550100000",
+        proposedValue: "+15550100001"
       }),
       expect.not.objectContaining({
         name: "mail",
@@ -271,7 +271,7 @@ describe("PortalClient HTTP flow", () => {
     });
 
     const confirmation = await client.requestPortalActionCommit("save_partner", {
-      phone_ref: "+49331234567"
+      phone_ref: "+15550100001"
     });
 
     expect(confirmation).toMatchObject({
@@ -282,8 +282,8 @@ describe("PortalClient HTTP flow", () => {
       diff: [
         expect.objectContaining({
           name: "phone_ref",
-          currentValue: "+4916097977656",
-          proposedValue: "+49331234567"
+          currentValue: "+15550100000",
+          proposedValue: "+15550100001"
         })
       ],
       validationIssues: []
@@ -307,7 +307,7 @@ describe("PortalClient HTTP flow", () => {
     expect(savePosts[0]!.url).toContain("name=save");
     expect(savePosts[0]!.url).toContain("resourceOrigin=form");
     expect(actionGets[0]!.url).toContain("name=save_partner");
-    expect(String(savePosts[0]!.body)).toContain("+49331234567");
+    expect(String(savePosts[0]!.body)).toContain("+15550100001");
     expect(String(savePosts[0]!.body)).toContain("<textfield id=\"ESQ_CHANGED\"");
     expect(String(savePosts[0]!.body)).toContain(">true</textfield>");
     expect(String(savePosts[0]!.body)).toContain("<history>");
@@ -570,8 +570,8 @@ function profileDetailForm(): string {
         <method>POST</method>
       </action>
       <textfield id="SO_#NAME_FIRST#_I_CP" refname="name_first_ref" required="true">Tillmann</textfield>
-      <textfield id="SO_#PHONE#_I_CP" refname="phone_ref" required="true">+4916097977656</textfield>
-      <textfield editable="false" id="SO_#SMTP_ADDR#_I_CP" refname="mail" required="true">info@tintveen.com</textfield>
+      <textfield id="SO_#PHONE#_I_CP" refname="phone_ref" required="true">+15550100000</textfield>
+      <textfield editable="false" id="SO_#SMTP_ADDR#_I_CP" refname="mail" required="true">user@example.test</textfield>
       <choicefield id="SO_#TITLE#_I_CP" meta:saved_value="0002" refname="int_anrede" required="true">
         <choice id="0001" title="Frau"/>
         <choice id="0002" selected="true" title="Herr"/>

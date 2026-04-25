@@ -141,7 +141,7 @@ describe("portal action discovery", () => {
           <id>SO_#PHONE#_I_CP</id>
           <name>phone_ref</name>
           <label>Telefon*</label>
-          <value>+4916097977656</value>
+          <value>+15550100000</value>
           <required>true</required>
           <editable>true</editable>
         </field>
@@ -149,7 +149,7 @@ describe("portal action discovery", () => {
           <id>SO_#SMTP_ADDR#_I_CP</id>
           <name>mail</name>
           <label>E-Mail*</label>
-          <value>info@tintveen.com</value>
+          <value>user@example.test</value>
           <required>true</required>
           <editable>false</editable>
           <hint>Bitte im Profilmenü andern.</hint>
@@ -198,7 +198,7 @@ describe("portal action discovery", () => {
         expect.objectContaining({
           name: "mail",
           portalId: "SO_#SMTP_ADDR#_I_CP",
-          value: "info@tintveen.com",
+          value: "user@example.test",
           editable: false
         }),
         expect.objectContaining({
