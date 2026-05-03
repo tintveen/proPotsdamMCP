@@ -8,8 +8,12 @@ const tempDirs: string[] = [];
 
 describe("credential configuration", () => {
   afterEach(async () => {
+    vi.doUnmock("keytar");
     vi.resetModules();
     delete process.env.PROPPOTSDAM_DATA_DIR;
+    delete process.env.PROPPOTSDAM_USERNAME;
+    delete process.env.PROPPOTSDAM_PASSWORD;
+    delete process.env.PROPPOTSDAM_BASE_URL;
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
@@ -46,6 +50,38 @@ describe("credential configuration", () => {
     expect(JSON.stringify(config)).not.toContain("super-secret");
     expect(calls).toEqual([["max@example.test", "super-secret"]]);
   });
+
+  it("uses environment credentials before loading keytar", async () => {
+    process.env.PROPPOTSDAM_USERNAME = "max@example.test";
+    process.env.PROPPOTSDAM_PASSWORD = "cloud-secret";
+    vi.doMock("keytar", () => {
+      throw new Error("keytar should not be imported for environment credentials");
+    });
+    vi.resetModules();
+
+    const { EnvironmentCredentialStore } = await import("../src/credentials.js");
+    const store = new EnvironmentCredentialStore();
+
+    await expect(store.getPassword("max@example.test")).resolves.toBe("cloud-secret");
+  });
+
+  it("falls back to the wrapped credential store when environment credentials are absent", async () => {
+    const calls: string[] = [];
+    const fallback: CredentialStore = {
+      getPassword: async (account) => {
+        calls.push(account);
+        return "keychain-secret";
+      },
+      setPassword: async () => undefined,
+      deletePassword: async () => true
+    };
+
+    const { EnvironmentCredentialStore } = await import("../src/credentials.js");
+    const store = new EnvironmentCredentialStore(fallback);
+
+    await expect(store.getPassword("max@example.test")).resolves.toBe("keychain-secret");
+    expect(calls).toEqual(["max@example.test"]);
+  });
 });
 
 describe("keytar adapter", () => {
@@ -60,6 +96,9 @@ describe("config repair", () => {
   afterEach(async () => {
     vi.resetModules();
     delete process.env.PROPPOTSDAM_DATA_DIR;
+    delete process.env.PROPPOTSDAM_USERNAME;
+    delete process.env.PROPPOTSDAM_PASSWORD;
+    delete process.env.PROPPOTSDAM_BASE_URL;
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
@@ -119,5 +158,22 @@ describe("config repair", () => {
 
     const config = await loadConfig();
     expect(config.exportDir).toBe(paths.exportsDir);
+  });
+
+  it("uses cloud environment username and baseUrl when no local config exists", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    process.env.PROPPOTSDAM_USERNAME = "cloud-user@example.test";
+    process.env.PROPPOTSDAM_BASE_URL = "https://portal.example.test/";
+    vi.resetModules();
+
+    const { loadConfig } = await import("../src/storage.js");
+
+    const config = await loadConfig();
+    expect(config).toMatchObject({
+      username: "cloud-user@example.test",
+      baseUrl: "https://portal.example.test"
+    });
   });
 });

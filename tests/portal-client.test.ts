@@ -8,8 +8,12 @@ const tempDirs: string[] = [];
 
 describe("PortalClient HTTP flow", () => {
   afterEach(async () => {
+    vi.doUnmock("keytar");
     vi.resetModules();
     delete process.env.PROPPOTSDAM_DATA_DIR;
+    delete process.env.PROPPOTSDAM_USERNAME;
+    delete process.env.PROPPOTSDAM_PASSWORD;
+    delete process.env.PROPPOTSDAM_BASE_URL;
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
@@ -23,6 +27,49 @@ describe("PortalClient HTTP flow", () => {
     expect(requests[0]?.url).toContain("/propotsdam-kundenportal/api5/authenticate");
     expect(String(requests[0]?.body)).toContain("sap-ffield_b64=");
     expect(String(requests[0]?.body)).not.toContain("super-secret");
+  });
+
+  it("logs in with environment credentials without importing keytar", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    process.env.PROPPOTSDAM_USERNAME = "cloud-user";
+    process.env.PROPPOTSDAM_PASSWORD = "cloud-secret";
+    process.env.PROPPOTSDAM_BASE_URL = "https://portal.example.test";
+    vi.doMock("keytar", () => {
+      throw new Error("keytar should not be imported for environment credentials");
+    });
+    vi.resetModules();
+
+    const { PortalClient } = await import("../src/portal/portal-client.js");
+    const requests: Array<{ url: string; method?: string; body?: BodyInit | null }> = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = String(url);
+      requests.push({ url: requestUrl, method: init?.method, body: init?.body });
+      if (requestUrl.includes("/authenticate")) {
+        return new Response("<ok />", {
+          status: 200,
+          headers: {
+            "set-cookie": "sid=abc; Path=/; HttpOnly",
+            "content-type": "application/xml"
+          }
+        });
+      }
+      return new Response(`
+        <asx:abap><asx:values><SERVICE>
+          <HEAD><LOGGED>X</LOGGED><USER_ID>CLOUD</USER_ID></HEAD>
+        </SERVICE></asx:values></asx:abap>
+      `, { status: 200, headers: { "content-type": "application/xml" } });
+    });
+
+    const client = new PortalClient(undefined, fetchMock);
+    const result = await client.login();
+
+    expect(result.authenticated).toBe(true);
+    expect(result.userId).toBe("CLOUD");
+    expect(requests[0]?.url).toContain("/propotsdam-kundenportal/api5/authenticate");
+    expect(String(requests[0]?.body)).toContain("sap-ffield_b64=");
+    expect(String(requests[0]?.body)).not.toContain("cloud-secret");
   });
 
   it("validates login through api5 services when the generic status endpoint has no marker", async () => {

@@ -8,7 +8,7 @@ import {
   LOGGED_SERVICES_PATH
 } from "../constants.js";
 import type { CredentialStore } from "../credentials.js";
-import { KeytarCredentialStore } from "../credentials.js";
+import { EnvironmentCredentialStore, KeytarCredentialStore } from "../credentials.js";
 import { PortalError } from "../errors.js";
 import { CookieSession } from "../http/cookie-session.js";
 import {
@@ -61,7 +61,7 @@ export class PortalClient {
   private actionCache?: ListResult<PortalAction>;
 
   constructor(
-    private readonly credentialStore: CredentialStore = new KeytarCredentialStore(),
+    private readonly credentialStore: CredentialStore = new EnvironmentCredentialStore(),
     private readonly fetchImpl: typeof fetch = fetch
   ) {}
 
@@ -88,7 +88,7 @@ export class PortalClient {
         state: "action_required",
         authenticated: false,
         action: "set_credentials",
-        reason: "No password was found in the macOS Keychain. Run `propotsdam-mcp auth set`."
+        reason: "No password was found in PROPPOTSDAM_PASSWORD or the macOS Keychain. Run `propotsdam-mcp auth set` or set cloud environment credentials."
       };
     }
 

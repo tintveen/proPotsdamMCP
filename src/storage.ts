@@ -31,6 +31,7 @@ export async function ensureStorageDirs(): Promise<void> {
 
 export async function loadConfig(): Promise<PortalConfig> {
   await ensureStorageDirs();
+  const envConfig = environmentConfig();
   try {
     const raw = await readFile(paths.configFile, "utf8");
     const parsed = JSON.parse(raw) as Partial<PortalConfig> & { downloadDir?: string };
@@ -43,10 +44,16 @@ export async function loadConfig(): Promise<PortalConfig> {
     delete (merged as { downloadDir?: string }).downloadDir;
     return {
       ...merged,
-      baseUrl: normalizeBaseUrl(merged.baseUrl)
+      ...envConfig,
+      baseUrl: normalizeBaseUrl(envConfig.baseUrl ?? merged.baseUrl)
     };
   } catch {
-    return defaultConfig();
+    const config = defaultConfig();
+    return {
+      ...config,
+      ...envConfig,
+      baseUrl: normalizeBaseUrl(envConfig.baseUrl ?? config.baseUrl)
+    };
   }
 }
 
@@ -128,4 +135,17 @@ function normalizeExportDir(value: string | undefined): string {
 function confirmationPath(confirmationId: string): string {
   const safeId = confirmationId.replace(/[^a-zA-Z0-9-]/g, "");
   return path.join(paths.confirmationsDir, `${safeId}.json`);
+}
+
+function environmentConfig(): Partial<PortalConfig> {
+  const config: Partial<PortalConfig> = {};
+  const username = process.env.PROPPOTSDAM_USERNAME?.trim();
+  const baseUrl = process.env.PROPPOTSDAM_BASE_URL?.trim();
+  if (username) {
+    config.username = username;
+  }
+  if (baseUrl) {
+    config.baseUrl = baseUrl;
+  }
+  return config;
 }
