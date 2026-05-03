@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -177,3 +177,121 @@ describe("config repair", () => {
     });
   });
 });
+
+describe("confirmation storage hardening", () => {
+  afterEach(async () => {
+    vi.resetModules();
+    delete process.env.PROPPOTSDAM_DATA_DIR;
+    delete process.env.PROPPOTSDAM_USERNAME;
+    delete process.env.PROPPOTSDAM_PASSWORD;
+    delete process.env.PROPPOTSDAM_BASE_URL;
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it("saves, loads, and deletes confirmations with valid ids", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    vi.resetModules();
+
+    const { deleteConfirmation, loadConfirmation, saveConfirmation } = await import("../src/storage.js");
+    const confirmation = testConfirmation("abc-123");
+
+    await saveConfirmation(confirmation);
+    await expect(loadConfirmation("abc-123")).resolves.toMatchObject({
+      confirmationId: "abc-123",
+      actionId: "save_partner",
+      values: { phone_ref: "+15550100001" }
+    });
+
+    await deleteConfirmation("abc-123");
+    await expect(loadConfirmation("abc-123")).resolves.toBeNull();
+  });
+
+  it("rejects invalid confirmation ids instead of sanitizing them", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    vi.resetModules();
+
+    const { deleteConfirmation, loadConfirmation, saveConfirmation } = await import("../src/storage.js");
+    const invalidIds = ["", "../outside", "abc.def", "abc_def", "abc def", " abc", "abc\n"];
+
+    for (const confirmationId of invalidIds) {
+      await expect(saveConfirmation(testConfirmation(confirmationId))).rejects.toThrow(/Confirmation id/);
+      await expect(loadConfirmation(confirmationId)).rejects.toThrow(/Confirmation id/);
+      await expect(deleteConfirmation(confirmationId)).rejects.toThrow(/Confirmation id/);
+    }
+  });
+
+  it("does not let path traversal delete files outside the confirmations directory", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    vi.resetModules();
+
+    const outsideFile = path.join(tempDir, "outside.json");
+    await writeFile(outsideFile, "keep me", "utf8");
+
+    const { deleteConfirmation } = await import("../src/storage.js");
+
+    await expect(deleteConfirmation("../outside")).rejects.toThrow(/Confirmation id/);
+    await expect(readdir(tempDir)).resolves.toContain("outside.json");
+  });
+
+  it("deletes expired confirmations while preserving future and malformed files", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    vi.resetModules();
+
+    const { deleteExpiredConfirmations, ensureStorageDirs, paths } = await import("../src/storage.js");
+    await ensureStorageDirs();
+    await mkdir(path.join(paths.confirmationsDir, "nested"));
+    await writeFile(
+      path.join(paths.confirmationsDir, "expired-1.json"),
+      JSON.stringify(testConfirmation("expired-1", "2026-05-03T09:00:00.000Z")),
+      "utf8"
+    );
+    await writeFile(
+      path.join(paths.confirmationsDir, "future-1.json"),
+      JSON.stringify(testConfirmation("future-1", "2026-05-03T11:00:00.000Z")),
+      "utf8"
+    );
+    await writeFile(path.join(paths.confirmationsDir, "malformed.json"), "{", "utf8");
+    await writeFile(
+      path.join(paths.confirmationsDir, "bad_id.json"),
+      JSON.stringify(testConfirmation("bad_id", "2026-05-03T09:00:00.000Z")),
+      "utf8"
+    );
+
+    await expect(deleteExpiredConfirmations(new Date("2026-05-03T10:00:00.000Z"))).resolves.toBe(1);
+    await expect(readdir(paths.confirmationsDir)).resolves.toEqual(expect.arrayContaining([
+      "bad_id.json",
+      "future-1.json",
+      "malformed.json",
+      "nested"
+    ]));
+    await expect(readdir(paths.confirmationsDir)).resolves.not.toContain("expired-1.json");
+  });
+});
+
+function testConfirmation(confirmationId: string, expiresAt = "2099-01-01T00:00:00.000Z") {
+  return {
+    confirmationId,
+    actionId: "save_partner",
+    actionTitle: "Speichern",
+    recordId: "PROFILE-1",
+    recordTitle: "Meine Daten",
+    xuclass: "ESQ_IA_PART",
+    serviceUrl: "/profile-service",
+    values: { phone_ref: "+15550100001" },
+    diff: [{
+      name: "phone_ref",
+      currentValue: "+15550100000",
+      proposedValue: "+15550100001"
+    }],
+    createdAt: "2026-05-03T09:00:00.000Z",
+    expiresAt
+  };
+}

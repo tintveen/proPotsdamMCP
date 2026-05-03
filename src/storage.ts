@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   APP_NAME,
@@ -82,13 +82,17 @@ export async function deleteSession(): Promise<void> {
 
 export async function saveConfirmation(confirmation: StoredPortalActionConfirmation): Promise<void> {
   await ensureStorageDirs();
-  await writeFile(confirmationPath(confirmation.confirmationId), `${JSON.stringify(confirmation, null, 2)}\n`, "utf8");
+  const filePath = confirmationPath(confirmation.confirmationId);
+  await deleteExpiredConfirmations();
+  await writeFile(filePath, `${JSON.stringify(confirmation, null, 2)}\n`, "utf8");
 }
 
 export async function loadConfirmation(confirmationId: string): Promise<StoredPortalActionConfirmation | null> {
   await ensureStorageDirs();
+  const filePath = confirmationPath(confirmationId);
+  await deleteExpiredConfirmations();
   try {
-    return JSON.parse(await readFile(confirmationPath(confirmationId), "utf8")) as StoredPortalActionConfirmation;
+    return JSON.parse(await readFile(filePath, "utf8")) as StoredPortalActionConfirmation;
   } catch {
     return null;
   }
@@ -96,6 +100,44 @@ export async function loadConfirmation(confirmationId: string): Promise<StoredPo
 
 export async function deleteConfirmation(confirmationId: string): Promise<void> {
   await rm(confirmationPath(confirmationId), { force: true });
+}
+
+export async function deleteExpiredConfirmations(now = new Date()): Promise<number> {
+  await ensureStorageDirs();
+  const confirmationDir = path.resolve(paths.confirmationsDir);
+  const entries = await readdir(confirmationDir, { withFileTypes: true });
+  let deleted = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) {
+      continue;
+    }
+
+    const confirmationId = entry.name.slice(0, -".json".length);
+    if (!isValidConfirmationId(confirmationId)) {
+      continue;
+    }
+
+    const filePath = confirmationPath(confirmationId);
+    if (path.dirname(path.resolve(filePath)) !== confirmationDir) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(await readFile(filePath, "utf8")) as Partial<StoredPortalActionConfirmation>;
+      if (parsed.confirmationId !== confirmationId || typeof parsed.expiresAt !== "string") {
+        continue;
+      }
+      const expiresAt = Date.parse(parsed.expiresAt);
+      if (Number.isNaN(expiresAt) || expiresAt > now.getTime()) {
+        continue;
+      }
+      await rm(filePath, { force: true });
+      deleted += 1;
+    } catch {
+      continue;
+    }
+  }
+  return deleted;
 }
 
 export function defaultConfig(): PortalConfig {
@@ -133,8 +175,18 @@ function normalizeExportDir(value: string | undefined): string {
 }
 
 function confirmationPath(confirmationId: string): string {
-  const safeId = confirmationId.replace(/[^a-zA-Z0-9-]/g, "");
-  return path.join(paths.confirmationsDir, `${safeId}.json`);
+  if (!isValidConfirmationId(confirmationId)) {
+    throw new Error("Confirmation id must be non-empty and contain only letters, numbers, and hyphens.");
+  }
+  const filePath = path.resolve(paths.confirmationsDir, `${confirmationId}.json`);
+  if (path.dirname(filePath) !== path.resolve(paths.confirmationsDir)) {
+    throw new Error("Confirmation id resolved outside the confirmations directory.");
+  }
+  return filePath;
+}
+
+function isValidConfirmationId(confirmationId: string): boolean {
+  return /^[a-zA-Z0-9-]+$/.test(confirmationId);
 }
 
 function environmentConfig(): Partial<PortalConfig> {

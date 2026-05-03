@@ -3,8 +3,173 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { PortalClient } from "../src/portal/portal-client.js";
 import { loadConfig, paths } from "../src/storage.js";
+import type { AuthResult, CapabilityMap, ListResult, PortalAction, PortalActionMap, PreparedPortalAction } from "../src/types.js";
+import { redactSecrets } from "../src/utils/redact.js";
 
 const liveEnabled = process.env.PROPPOTSDAM_LIVE_TEST === "1";
+const detailedArtifactsEnabled = process.env.PROPPOTSDAM_LIVE_TEST_DETAILS === "1";
+
+type LiveReadPassArtifactInput = {
+  status: AuthResult;
+  capabilities: CapabilityMap;
+  inbox: ListResult<unknown>;
+  records: ListResult<unknown>;
+  actionMap: PortalActionMap;
+  actions: ListResult<PortalAction>;
+  firstActionDetail?: PortalAction;
+  prepared?: PreparedPortalAction;
+};
+
+type LiveReadPassArtifactOptions = {
+  artifactPath: string;
+  generatedAt: string;
+  detailed: boolean;
+};
+
+function buildLiveReadPassArtifact(input: LiveReadPassArtifactInput, options: LiveReadPassArtifactOptions): unknown {
+  const summary = {
+    generatedAt: options.generatedAt,
+    artifact: {
+      name: "live-read-pass",
+      mode: options.detailed ? "details" : "summary",
+      path: options.artifactPath
+    },
+    auth: {
+      state: input.status.state,
+      authenticated: input.status.authenticated,
+      action: input.status.action,
+      reason: input.status.reason
+    },
+    counts: {
+      capabilityServices: input.capabilities.services.length,
+      inboxItems: input.inbox.items.length,
+      portalRecords: input.records.items.length,
+      listedActions: input.actions.items.length,
+      detailedActions: input.firstActionDetail ? 1 : 0,
+      preparedDrafts: input.prepared ? 1 : 0
+    },
+    totals: {
+      capabilities: input.capabilities.totals,
+      actions: input.actionMap.totals
+    },
+    actionKindCounts: countActionKinds(input.actions.items),
+    preparable: {
+      discovered: input.actionMap.totals.preparableActions,
+      listed: input.actions.items.filter((action) => action.preparable).length,
+      prepared: input.prepared ? 1 : 0
+    },
+    skipped: {
+      discovered: input.actionMap.totals.skippedActions,
+      listed: input.actions.items.filter((action) => !action.preparable).length
+    },
+    partial: {
+      actions: input.actionMap.partial
+    },
+    metadata: {
+      liveTestOptIn: liveEnabled,
+      detailsOptIn: options.detailed,
+      capabilityArtifactPath: input.capabilities.artifactPath,
+      actionArtifactPath: input.actionMap.artifactPath,
+      source: "tests/live-read-pass.test.ts"
+    }
+  };
+
+  if (!options.detailed) {
+    return summary;
+  }
+
+  return redactSecrets({
+    ...summary,
+    details: input
+  });
+}
+
+function countActionKinds(actions: PortalAction[]): Record<string, number> {
+  return actions.reduce<Record<string, number>>((counts, action) => {
+    counts[action.actionKind] = (counts[action.actionKind] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+describe("live read pass artifact helpers", () => {
+  it("builds summary-only artifacts by default", () => {
+    const artifact = buildLiveReadPassArtifact(createArtifactInput(), {
+      artifactPath: "/tmp/traces/live-read-pass-1.json",
+      generatedAt: "2026-05-03T00:00:00.000Z",
+      detailed: false
+    });
+
+    expect(artifact).toMatchObject({
+      artifact: {
+        mode: "summary",
+        path: "/tmp/traces/live-read-pass-1.json"
+      },
+      auth: {
+        state: "authenticated",
+        authenticated: true
+      },
+      counts: {
+        capabilityServices: 2,
+        inboxItems: 3,
+        portalRecords: 4,
+        listedActions: 3,
+        detailedActions: 1,
+        preparedDrafts: 1
+      },
+      totals: {
+        actions: {
+          serviceCount: 2,
+          actionCount: 3,
+          preparableActions: 1,
+          skippedActions: 2
+        }
+      },
+      actionKindCounts: {
+        form: 1,
+        navigation: 2
+      },
+      preparable: {
+        discovered: 1,
+        listed: 1,
+        prepared: 1
+      },
+      skipped: {
+        discovered: 2,
+        listed: 2
+      },
+      partial: {
+        actions: true
+      }
+    });
+    expect(JSON.stringify(artifact)).not.toContain("Sensitive inbox title");
+    expect(JSON.stringify(artifact)).not.toContain("Secret action detail");
+  });
+
+  it("redacts detailed artifacts when explicitly enabled", () => {
+    const artifact = buildLiveReadPassArtifact(createArtifactInput(), {
+      artifactPath: "/tmp/traces/live-read-pass-1.json",
+      generatedAt: "2026-05-03T00:00:00.000Z",
+      detailed: true
+    });
+    const serialized = JSON.stringify(artifact);
+
+    expect(artifact).toMatchObject({
+      artifact: { mode: "details" },
+      details: {
+        inbox: {
+          source: "boxlist"
+        }
+      }
+    });
+    expect((artifact as { details: { inbox: { items: Array<{ title?: string }> } } }).details.inbox.items[0]).toMatchObject({
+      title: "Sensitive inbox title"
+    });
+    expect(serialized).toContain("Sensitive inbox title");
+    expect(serialized).toContain("[REDACTED]");
+    expect(serialized).not.toContain("csrf-token");
+    expect(serialized).not.toContain("session=abc");
+  });
+});
 
 describe.skipIf(!liveEnabled)("live ProPotsdam read and prepare-only pass", () => {
   it("discovers account capabilities and exercises read-only plus prepare-only tools", async () => {
@@ -58,7 +223,131 @@ describe.skipIf(!liveEnabled)("live ProPotsdam read and prepare-only pass", () =
 
     await mkdir(paths.tracesDir, { recursive: true });
     const artifactPath = path.join(paths.tracesDir, `live-read-pass-${Date.now()}.json`);
-    await writeFile(artifactPath, `${JSON.stringify({ status, capabilities, inbox, records, actionMap, actions, firstActionDetail, prepared }, null, 2)}\n`);
+    const artifact = buildLiveReadPassArtifact(
+      { status, capabilities, inbox, records, actionMap, actions, firstActionDetail, prepared },
+      {
+        artifactPath,
+        generatedAt: new Date().toISOString(),
+        detailed: detailedArtifactsEnabled
+      }
+    );
+    await writeFile(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`);
     expect(artifactPath).toContain("live-read-pass");
   }, 600_000);
 });
+
+function createArtifactInput(): LiveReadPassArtifactInput {
+  const actions: PortalAction[] = [
+    createAction({ id: "A-1", title: "Secret action detail", actionKind: "form", preparable: true }),
+    createAction({ id: "A-2", title: "Navigate", actionKind: "navigation", preparable: false }),
+    createAction({ id: "A-3", title: "Navigate again", actionKind: "navigation", preparable: false })
+  ];
+
+  return {
+    status: {
+      state: "authenticated",
+      authenticated: true,
+      userId: "USER-1",
+      userFullName: "Sensitive User"
+    },
+    capabilities: {
+      generatedAt: "2026-05-03T00:00:00.000Z",
+      authenticated: true,
+      dataPolicy: "test",
+      services: [
+        createCapabilityService("Postfach"),
+        createCapabilityService("Vertraege")
+      ],
+      totals: {
+        serviceCount: 2,
+        inboxItems: 3,
+        portalRecords: 4,
+        unknownItems: 5
+      },
+      artifactPath: "/tmp/traces/capabilities-1.json"
+    },
+    inbox: {
+      source: "boxlist",
+      items: [
+        { id: "I-1", title: "Sensitive inbox title", csrfToken: "csrf-token" },
+        { id: "I-2" },
+        { id: "I-3" }
+      ]
+    },
+    records: {
+      source: "boxlist",
+      items: [{ id: "R-1" }, { id: "R-2" }, { id: "R-3" }, { id: "R-4" }]
+    },
+    actionMap: {
+      generatedAt: "2026-05-03T00:00:00.000Z",
+      authenticated: true,
+      actionPolicy: "prepare-only",
+      services: [],
+      actions,
+      partial: true,
+      detailScanLimit: 20,
+      totals: {
+        serviceCount: 2,
+        actionCount: 3,
+        preparableActions: 1,
+        skippedActions: 2
+      },
+      artifactPath: "/tmp/traces/write-actions-1.json"
+    },
+    actions: {
+      source: "boxlist",
+      items: actions
+    },
+    firstActionDetail: createAction({
+      id: "A-1",
+      title: "Secret action detail",
+      actionKind: "form",
+      preparable: true,
+      rawHints: {
+        Cookie: "session=abc"
+      }
+    }),
+    prepared: {
+      ok: true,
+      preparedOnly: true,
+      actionId: "A-1",
+      title: "Secret action detail",
+      summary: "prepared",
+      validationIssues: [],
+      draft: {
+        method: "POST",
+        fields: []
+      }
+    }
+  };
+}
+
+function createAction(action: Partial<PortalAction>): PortalAction {
+  return {
+    id: action.id ?? "A-1",
+    serviceTitle: "Service",
+    title: action.title ?? "Action",
+    source: "boxlist",
+    actionKind: action.actionKind ?? "form",
+    method: "POST",
+    fields: [],
+    requiresInput: false,
+    riskLevel: "low",
+    preparable: action.preparable ?? true,
+    rawHints: action.rawHints ?? {}
+  };
+}
+
+function createCapabilityService(title: string): CapabilityMap["services"][number] {
+  return {
+    title,
+    section: "generic",
+    readable: true,
+    boxlist: {
+      available: true,
+      itemCount: 1,
+      readableItems: 1
+    },
+    sampleItemIds: []
+  };
+}

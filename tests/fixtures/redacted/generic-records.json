@@ -1,0 +1,24 @@
+{
+  "records": [
+    {
+      "id": "fixture-record-001",
+      "title": "Synthetic generic record",
+      "date": "03.01.2099",
+      "category": "fixture-record",
+      "detailUrl": "/synthetic/records/detail/fixture-record-001"
+    },
+    {
+      "id": "fixture-resource-001",
+      "title": "Synthetic downloadable record",
+      "filename": "synthetic-record.pdf",
+      "resourceId": "fixture-resource-record-001",
+      "resourceOrigin": "fixture-origin",
+      "mimeType": "application/pdf"
+    },
+    {
+      "id": "$BS_CALL_LINK_FIXTURE",
+      "title": "Synthetic external reference",
+      "url": "https://example.invalid/synthetic-reference"
+    }
+  ]
+}

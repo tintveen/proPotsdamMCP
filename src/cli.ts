@@ -5,10 +5,12 @@ import { createInterface as createHiddenInterface } from "node:readline";
 import type { Interface as HiddenInterface } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createDoctorReport } from "./diagnostics.js";
+import type { DoctorReport } from "./diagnostics.js";
 import { createServer } from "./mcp.js";
 import { configureCredentials, PortalClient } from "./portal/portal-client.js";
 import { loadConfig, normalizeBaseUrl, paths } from "./storage.js";
-import type { CapabilityMap, PortalActionMap, PortalConfig } from "./types.js";
+import type { AuthResult, CapabilityMap, PortalActionMap, PortalConfig } from "./types.js";
 
 export interface CliIo {
   write(text: string): void;
@@ -17,6 +19,9 @@ export interface CliIo {
 }
 
 export interface CliPortalClient {
+  status?(): Promise<AuthResult>;
+  login?(): Promise<AuthResult>;
+  logout?(): Promise<{ ok: true }>;
   discoverCapabilities(): Promise<CapabilityMap>;
   discoverWriteActions(): Promise<PortalActionMap>;
 }
@@ -25,6 +30,7 @@ export interface CliDeps {
   loadConfig(): Promise<PortalConfig>;
   configureCredentials(options: { username: string; password: string; baseUrl?: string }): Promise<void>;
   configFile: string;
+  createDoctorReport?: () => Promise<DoctorReport>;
 }
 
 export async function runCli(
@@ -49,9 +55,29 @@ export async function runCli(
       await setCredentials(argv, io, deps);
       return 0;
     }
+    if (command === "auth" && subcommand === "status") {
+      const status = await requireClientMethod(client.status, "auth status").call(client);
+      io.write(`${JSON.stringify(status, null, 2)}\n`);
+      return 0;
+    }
+    if (command === "auth" && subcommand === "login") {
+      const login = await requireClientMethod(client.login, "auth login").call(client);
+      io.write(`${JSON.stringify(login, null, 2)}\n`);
+      return 0;
+    }
+    if (command === "auth" && subcommand === "logout") {
+      const logout = await requireClientMethod(client.logout, "auth logout").call(client);
+      io.write(`${JSON.stringify(logout, null, 2)}\n`);
+      return 0;
+    }
     if (command === "config" && subcommand === "show") {
       const config = await deps.loadConfig();
       io.write(`${JSON.stringify({ ...config, dataDir: paths.dataDir }, null, 2)}\n`);
+      return 0;
+    }
+    if (command === "doctor") {
+      const report = await (deps.createDoctorReport ?? createDoctorReport)();
+      io.write(`${JSON.stringify(report, null, 2)}\n`);
       return 0;
     }
     if (command === "discover") {
@@ -72,6 +98,13 @@ export async function runCli(
     io.write(`Error: ${message}\n`);
     return 1;
   }
+}
+
+function requireClientMethod<T extends (...args: never[]) => Promise<unknown>>(method: T | undefined, command: string): T {
+  if (!method) {
+    throw new Error(`Client method for '${command}' is unavailable.`);
+  }
+  return method;
 }
 
 async function setCredentials(argv: string[], io: CliIo, deps: CliDeps): Promise<void> {
@@ -116,7 +149,8 @@ function defaultDeps(): CliDeps {
   return {
     loadConfig,
     configureCredentials,
-    configFile: paths.configFile
+    configFile: paths.configFile,
+    createDoctorReport
   };
 }
 
@@ -153,6 +187,10 @@ function help(): string {
   return `Usage:
   propotsdam-mcp serve
   propotsdam-mcp auth set
+  propotsdam-mcp auth status
+  propotsdam-mcp auth login
+  propotsdam-mcp auth logout
+  propotsdam-mcp doctor
   propotsdam-mcp discover --json
   propotsdam-mcp actions --json
   propotsdam-mcp config show

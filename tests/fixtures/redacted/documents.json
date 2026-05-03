@@ -1,0 +1,12 @@
+{
+  "documents": [
+    {
+      "id": "fixture-document-001",
+      "title": "synthetic-document.pdf",
+      "resourceId": "fixture-resource-document-001",
+      "mimeType": "application/pdf",
+      "date": "02.01.2099",
+      "category": "fixture-document"
+    }
+  ]
+}

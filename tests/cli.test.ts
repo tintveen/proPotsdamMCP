@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AuthResult } from "../src/types.js";
 
 describe("CLI", () => {
   it("prints help with a zero exit code", async () => {
@@ -31,6 +32,181 @@ describe("CLI", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("propotsdam-mcp serve");
     expect(stdout).toContain("propotsdam-mcp auth set");
+    expect(stdout).toContain("propotsdam-mcp auth status");
+    expect(stdout).toContain("propotsdam-mcp auth login");
+    expect(stdout).toContain("propotsdam-mcp auth logout");
+    expect(stdout).toContain("propotsdam-mcp doctor");
+  });
+
+  it.each([
+    {
+      argv: ["node", "propotsdam-mcp", "auth", "status"],
+      method: "status" as const,
+      result: {
+        state: "authenticated" as const,
+        authenticated: true,
+        userId: "user-id"
+      }
+    },
+    {
+      argv: ["node", "propotsdam-mcp", "auth", "login"],
+      method: "login" as const,
+      result: {
+        state: "authenticated" as const,
+        authenticated: true,
+        userFullName: "Fixture User"
+      }
+    },
+    {
+      argv: ["node", "propotsdam-mcp", "auth", "logout"],
+      method: "logout" as const,
+      result: {
+        ok: true as const
+      }
+    }
+  ])("prints auth $method results as JSON without prompting or discovery", async ({ argv, method, result }) => {
+    const { runCli } = await import("../src/cli.js");
+    const calls: string[] = [];
+    let stdout = "";
+
+    const exitCode = await runCli(
+      argv,
+      {
+        write: (text: string) => {
+          stdout += text;
+        },
+        question: async () => {
+          throw new Error("question should not be called");
+        },
+        questionHidden: async () => {
+          throw new Error("questionHidden should not be called");
+        }
+      },
+      {
+        status: async () => {
+          calls.push("status");
+          return method === "status" ? result as AuthResult : {
+            state: "unauthenticated",
+            authenticated: false
+          };
+        },
+        login: async () => {
+          calls.push("login");
+          return method === "login" ? result as AuthResult : {
+            state: "unauthenticated",
+            authenticated: false
+          };
+        },
+        logout: async () => {
+          calls.push("logout");
+          return { ok: true };
+        },
+        discoverCapabilities: async () => {
+          throw new Error("discoverCapabilities should not be called");
+        },
+        discoverWriteActions: async () => {
+          throw new Error("discoverWriteActions should not be called");
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(result);
+    expect(calls).toEqual([method]);
+  });
+
+  it("prints doctor reports as JSON without prompting or discovering portal data", async () => {
+    const { runCli } = await import("../src/cli.js");
+    let stdout = "";
+
+    const exitCode = await runCli(
+      ["node", "propotsdam-mcp", "doctor"],
+      {
+        write: (text: string) => {
+          stdout += text;
+        },
+        question: async () => {
+          throw new Error("question should not be called");
+        },
+        questionHidden: async () => {
+          throw new Error("questionHidden should not be called");
+        }
+      },
+      {
+        discoverCapabilities: async () => {
+          throw new Error("discoverCapabilities should not be called");
+        },
+        discoverWriteActions: async () => {
+          throw new Error("discoverWriteActions should not be called");
+        }
+      },
+      {
+        loadConfig: async () => ({
+          baseUrl: "https://portal.example.test",
+          apiVersion: "6.262",
+          appVersion: "6.262.8",
+          language: "de",
+          exportDir: "/tmp/exports",
+          clientId: "client-id"
+        }),
+        configureCredentials: vi.fn(),
+        configFile: "/tmp/propotsdam-mcp/config.json",
+        createDoctorReport: async () => ({
+          generatedAt: "2026-05-03T00:00:00.000Z",
+          runtime: {
+            nodeVersion: "22.1.0",
+            nodeSupported: true,
+            platform: "darwin",
+            arch: "arm64",
+            command: "propotsdam-mcp"
+          },
+          paths: {
+            dataDir: "/tmp/propotsdam-mcp",
+            configFile: "/tmp/propotsdam-mcp/config.json",
+            tracesDir: "/tmp/propotsdam-mcp/traces",
+            exportsDir: "/tmp/propotsdam-mcp/exports",
+            confirmationsDir: "/tmp/propotsdam-mcp/confirmations"
+          },
+          config: {
+            baseUrl: "https://portal.example.test",
+            apiVersion: "6.262",
+            appVersion: "6.262.8",
+            language: "de",
+            usernameConfigured: false,
+            usernameSource: "none"
+          },
+          credentials: {
+            passwordConfigured: false,
+            passwordSource: "none"
+          },
+          session: {
+            checked: true,
+            authenticated: false,
+            state: "unauthenticated"
+          },
+          portalReachability: {
+            checked: true,
+            reachable: true,
+            method: "HEAD",
+            status: 200,
+            url: "https://portal.example.test"
+          }
+        })
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({
+      runtime: {
+        nodeSupported: true
+      },
+      credentials: {
+        passwordConfigured: false
+      },
+      portalReachability: {
+        reachable: true
+      }
+    });
   });
 
   it("prints discover capability maps as JSON", async () => {

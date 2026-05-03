@@ -1,0 +1,10 @@
+<boxlist>
+  <box unread="true" replied="false">
+    <id>fixture-message-001</id>
+    <title>Synthetic inbox notice</title>
+    <subtitle>Fixture sender</subtitle>
+    <date>01.01.2099</date>
+    <abstract>Redacted placeholder inbox text.</abstract>
+    <SERVICE>/synthetic/inbox/detail/fixture-message-001</SERVICE>
+  </box>
+</boxlist>

@@ -38,3 +38,6 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Verify package surface
+        run: npm pack --dry-run

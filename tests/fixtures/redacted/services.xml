@@ -1,0 +1,20 @@
+<portal>
+  <service>
+    <SERVICEID>fixture-service-inbox</SERVICEID>
+    <title>Postfach</title>
+    <SERVICE>/synthetic/inbox</SERVICE>
+    <XUCLASS>SYNTHETIC_INBOX</XUCLASS>
+  </service>
+  <service>
+    <SERVICEID>fixture-service-documents</SERVICEID>
+    <title>Dokumente</title>
+    <SERVICE>/synthetic/documents</SERVICE>
+    <XUCLASS>SYNTHETIC_DOCUMENTS</XUCLASS>
+  </service>
+  <service>
+    <SERVICEID>fixture-service-generic</SERVICEID>
+    <title>Allgemeine Vorgänge</title>
+    <SERVICE>/synthetic/records</SERVICE>
+    <XUCLASS>SYNTHETIC_RECORDS</XUCLASS>
+  </service>
+</portal>

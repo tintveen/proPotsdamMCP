@@ -1,0 +1,37 @@
+<detail>
+  <form>
+    <action>
+      <command>save_fixture_request</command>
+      <method>POST</method>
+      <endpoint>/synthetic/actions/save</endpoint>
+      <text>Save fixture request</text>
+    </action>
+    <textfield>
+      <id>field-subject</id>
+      <refname>subject</refname>
+      <label>Subject</label>
+      <required>true</required>
+      <editable>true</editable>
+    </textfield>
+    <choicefield>
+      <id>field-topic</id>
+      <refname>topic</refname>
+      <label>Topic</label>
+      <required>true</required>
+      <editable>true</editable>
+      <choice>
+        <value>topic-other</value>
+      </choice>
+      <choice>
+        <value>topic-fixture</value>
+        <selected>true</selected>
+      </choice>
+    </choicefield>
+    <hiddenfield>
+      <id>field-record</id>
+      <refname>recordMarker</refname>
+      <type>hidden</type>
+      <value>fixture-hidden-value</value>
+    </hiddenfield>
+  </form>
+</detail>
