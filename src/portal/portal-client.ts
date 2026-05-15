@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -28,6 +28,8 @@ import type {
   DocumentItem,
   InboxItem,
   ListResult,
+  PortalFileExportResult,
+  PortalFileItem,
   PortalConfig,
   PortalAction,
   PortalActionField,
@@ -35,9 +37,14 @@ import type {
   PortalActionMap,
   PortalCommitResult,
   PortalRecordItem,
+  PortalReadDomain,
   PortalSection,
+  PortalWriteCapability,
+  PortalWriteDomain,
   PreparedPortalAction,
-  StoredPortalActionConfirmation
+  PreparedPortalWrite,
+  StoredPortalActionConfirmation,
+  StructuredPortalRecord
 } from "../types.js";
 import { redactSecrets } from "../utils/redact.js";
 import { buildServiceCapability, classifyServiceCapability } from "./capabilities.js";
@@ -46,13 +53,163 @@ import {
   classifyAuthFailure,
   extractDocumentItems,
   extractInboxItems,
+  extractPortalFileItems,
   extractPortalActions,
   extractPortalRecordItems,
   extractServices,
   findSectionServices,
   normalizeDetailText,
-  parseSessionStatus
+  parseSessionStatus,
+  toStructuredPortalRecord
 } from "./parsers.js";
+
+const WRITE_DOMAIN_SPECS: Record<PortalWriteDomain, {
+  title: string;
+  description: string;
+  requiredFields: string[];
+  targetRequired: boolean;
+  uploadSupported?: boolean;
+}> = {
+  inbox_compose: {
+    title: "Compose inbox message",
+    description: "Prepare a new portal inbox message draft.",
+    requiredFields: ["subject", "message"],
+    targetRequired: false
+  },
+  inbox_reply: {
+    title: "Reply to inbox message",
+    description: "Prepare an inbox reply draft.",
+    requiredFields: ["message"],
+    targetRequired: true
+  },
+  inbox_state: {
+    title: "Change inbox message state",
+    description: "Prepare a read/unread/archive state-change draft.",
+    requiredFields: ["state"],
+    targetRequired: true
+  },
+  workflow_reply: {
+    title: "Reply in workflow",
+    description: "Prepare a workflow conversation reply draft.",
+    requiredFields: ["message"],
+    targetRequired: true
+  },
+  read_confirmation: {
+    title: "Confirm read receipt",
+    description: "Prepare a portal read-confirmation draft.",
+    requiredFields: [],
+    targetRequired: true
+  },
+  repair_report: {
+    title: "Submit repair report",
+    description: "Prepare a repair or damage report draft.",
+    requiredFields: ["description"],
+    targetRequired: false
+  },
+  repair_file_upload: {
+    title: "Attach repair file",
+    description: "Prepare repair photo or file upload metadata.",
+    requiredFields: ["filePath"],
+    targetRequired: true,
+    uploadSupported: false
+  },
+  repair_appointment: {
+    title: "Schedule repair appointment",
+    description: "Prepare a repair appointment selection draft.",
+    requiredFields: ["appointment"],
+    targetRequired: true
+  },
+  service_ticket: {
+    title: "Submit service ticket",
+    description: "Prepare a customer service request draft.",
+    requiredFields: ["message"],
+    targetRequired: false
+  },
+  pet_approval: {
+    title: "Request pet approval",
+    description: "Prepare a pet approval request draft.",
+    requiredFields: ["animalType"],
+    targetRequired: false
+  },
+  payment_method: {
+    title: "Change payment method",
+    description: "Prepare bank or payment method change data.",
+    requiredFields: ["iban"],
+    targetRequired: false
+  },
+  meter_reading: {
+    title: "Submit meter reading",
+    description: "Prepare a consumption or meter reading draft.",
+    requiredFields: ["meterReading"],
+    targetRequired: true
+  },
+  house_notice_ack: {
+    title: "Acknowledge house notice",
+    description: "Prepare a house notice acknowledgement draft.",
+    requiredFields: [],
+    targetRequired: true
+  },
+  real_estate_inquiry: {
+    title: "Send real-estate inquiry",
+    description: "Prepare an apartment inquiry draft.",
+    requiredFields: ["message"],
+    targetRequired: true
+  },
+  viewing_booking: {
+    title: "Book viewing appointment",
+    description: "Prepare a viewing appointment booking draft.",
+    requiredFields: ["appointment"],
+    targetRequired: true
+  },
+  rental_application: {
+    title: "Submit rental application",
+    description: "Prepare a rental application draft.",
+    requiredFields: ["message"],
+    targetRequired: true
+  },
+  registration_activation: {
+    title: "Complete registration activation",
+    description: "Prepare registration or activation-code data.",
+    requiredFields: ["username", "activationCode"],
+    targetRequired: false
+  },
+  password_change: {
+    title: "Change portal password",
+    description: "Prepare password-change data.",
+    requiredFields: ["currentPassword", "newPassword"],
+    targetRequired: false
+  },
+  terms_acceptance: {
+    title: "Accept portal terms",
+    description: "Prepare terms or privacy acceptance data.",
+    requiredFields: ["accepted"],
+    targetRequired: false
+  },
+  account_verification: {
+    title: "Complete account verification",
+    description: "Prepare account verification data.",
+    requiredFields: ["verificationCode"],
+    targetRequired: false
+  },
+  captcha_completion: {
+    title: "Complete captcha",
+    description: "Prepare captcha completion data.",
+    requiredFields: ["captchaResponse"],
+    targetRequired: false
+  },
+  profile_account_setting: {
+    title: "Change profile/account setting",
+    description: "Prepare profile or account setting changes.",
+    requiredFields: [],
+    targetRequired: false
+  },
+  external_navigation: {
+    title: "Open external/navigation action",
+    description: "Prepare an external link or navigation action.",
+    requiredFields: [],
+    targetRequired: true
+  }
+};
 
 export class PortalClient {
   private static readonly detailActionScanLimit = 250;
@@ -220,6 +377,97 @@ export class PortalClient {
     };
   }
 
+  async listPortalFiles(filter: { serviceId?: string; xuclass?: string; mimeType?: string } = {}): Promise<ListResult<PortalFileItem>> {
+    const records = await this.listPortalRecords({
+      serviceId: filter.serviceId,
+      xuclass: filter.xuclass
+    });
+    const items = extractPortalFileItems(records.items).filter((item) => {
+      if (filter.mimeType && item.mimeType !== filter.mimeType) {
+        return false;
+      }
+      return true;
+    });
+    return {
+      items,
+      source: records.source
+    };
+  }
+
+  async exportPortalFile(id: string, options: { outputDir?: string } = {}): Promise<PortalFileExportResult> {
+    const files = await this.listPortalFiles();
+    const match = files.items.find((item) => item.id === id || item.sourceRecordId === id || item.title === id || item.filename === id);
+    if (!match) {
+      throw new PortalError(`Portal file '${id}' was not found.`, "NOT_FOUND", 404);
+    }
+    if (!match.exportable) {
+      throw new PortalError(`Portal file '${id}' is not exportable.`, "FILE_NOT_EXPORTABLE", 403);
+    }
+
+    const config = await loadConfig();
+    const session = await this.authenticatedSession(config);
+    const resourceId = match.resourceId ?? match.sourceRecordId;
+    const url = this.buildActionUrl(config, match.serviceUrl, resourceId, "get", {
+      resourceOrigin: match.resourceOrigin
+    });
+    if (!url) {
+      throw new PortalError(`Portal file '${id}' has no readable endpoint.`, "FILE_NOT_EXPORTABLE", 403);
+    }
+    const response = await session.getBinary(url);
+    await saveSession(session.serialize());
+    if (!response.ok) {
+      throw new PortalError(`Portal file '${id}' could not be exported.`, "FILE_EXPORT_FAILED", response.status);
+    }
+
+    const outputDir = options.outputDir ?? config.exportDir;
+    await mkdir(outputDir, { recursive: true });
+    const filename = safeExportFilename(match.filename);
+    const exportPath = path.join(outputDir, `${safeExportFilename(match.sourceRecordId)}-${filename}`);
+    await writeFile(exportPath, response.body);
+    return {
+      ok: true,
+      id: match.id,
+      sourceRecordId: match.sourceRecordId,
+      sourceRecordTitle: match.sourceRecordTitle,
+      filename,
+      path: exportPath,
+      mimeType: response.contentType ?? match.mimeType,
+      byteLength: response.body.byteLength,
+      sha256: createHash("sha256").update(response.body).digest("hex"),
+      exportedAt: new Date().toISOString()
+    };
+  }
+
+  async listStructuredPortalRecords(filter: {
+    serviceId?: string;
+    xuclass?: string;
+    domain?: PortalReadDomain;
+  } = {}): Promise<ListResult<StructuredPortalRecord>> {
+    const records = await this.listPortalRecords({
+      serviceId: filter.serviceId,
+      xuclass: filter.xuclass
+    });
+    const inboxRecords = await this.listStructuredInboxRecords(filter);
+    const items = [...records.items, ...inboxRecords]
+      .map(toStructuredPortalRecord)
+      .filter((item) => !filter.domain || item.domain === filter.domain);
+    return {
+      items,
+      source: records.source
+    };
+  }
+
+  async getStructuredPortalRecord(id: string): Promise<StructuredPortalRecord> {
+    try {
+      return toStructuredPortalRecord(await this.getPortalRecord(id));
+    } catch (error) {
+      if (!(error instanceof PortalError) || error.code !== "NOT_FOUND") {
+        throw error;
+      }
+      return toStructuredPortalRecord(inboxItemToPortalRecord(await this.getInboxItem(id)));
+    }
+  }
+
   async discoverWriteActions(): Promise<PortalActionMap> {
     const config = await loadConfig();
     const session = await this.authenticatedSession(config);
@@ -371,6 +619,100 @@ export class PortalClient {
       throw new PortalError(`Portal action '${id}' was not found.`, "NOT_FOUND", 404);
     }
     return match;
+  }
+
+  async listPortalWriteCapabilities(filter: {
+    domain?: PortalWriteDomain;
+    serviceId?: string;
+    xuclass?: string;
+  } = {}): Promise<ListResult<PortalWriteCapability>> {
+    const actions = await this.listPortalActions({
+      serviceId: filter.serviceId,
+      xuclass: filter.xuclass
+    }).catch(() => ({ items: [] as PortalAction[], source: "boxlist" as const }));
+    const portalCapabilities = actions.items.map(actionToWriteCapability);
+    const staticCapabilities: PortalWriteCapability[] = Object.entries(WRITE_DOMAIN_SPECS).map(([domain, spec]) => ({
+      domain: domain as PortalWriteDomain,
+      title: spec.title,
+      description: spec.description,
+      source: "static" as const,
+      requiredFields: spec.requiredFields,
+      targetRequired: spec.targetRequired,
+      uploadSupported: spec.uploadSupported ?? false,
+      liveCommitSupported: false as const,
+      executionPolicy: "draft_only_no_live_write" as const
+    }));
+    const items = [...portalCapabilities, ...staticCapabilities].filter((item) => {
+      if (filter.domain && item.domain !== filter.domain) {
+        return false;
+      }
+      if (filter.serviceId && item.serviceId !== filter.serviceId) {
+        return false;
+      }
+      if (filter.xuclass && item.xuclass !== filter.xuclass) {
+        return false;
+      }
+      return true;
+    });
+    return {
+      items: dedupeWriteCapabilities(items),
+      source: actions.source
+    };
+  }
+
+  async preparePortalWrite(input: {
+    domain: PortalWriteDomain;
+    values?: Record<string, unknown>;
+    targetId?: string;
+    actionId?: string;
+  }): Promise<PreparedPortalWrite> {
+    const values = input.values ?? {};
+    const capabilities = await this.listPortalWriteCapabilities({ domain: input.domain });
+    const capability = input.actionId
+      ? capabilities.items.find((item) => item.actionId === input.actionId)
+      : capabilities.items.find((item) => item.actionId) ?? capabilities.items[0];
+    if (!capability) {
+      throw new PortalError(`Portal write domain '${input.domain}' was not found.`, "NOT_FOUND", 404);
+    }
+
+    const targetId = input.targetId ?? capability.recordId;
+    const validationIssues: string[] = [];
+    if (capability.targetRequired && !targetId) {
+      validationIssues.push("Missing targetId.");
+    }
+    for (const field of capability.requiredFields) {
+      if (values[field] === undefined || values[field] === "") {
+        validationIssues.push(`Missing required field '${field}'.`);
+      }
+    }
+
+    let draft: PreparedPortalWrite["draft"];
+    if (capability.actionId) {
+      const action = await this.getPortalAction(capability.actionId);
+      if (action.preparable) {
+        const preparedAction = await this.preparePortalAction(action.id, values);
+        validationIssues.push(...preparedAction.validationIssues);
+        draft = preparedAction.draft;
+      }
+    }
+
+    const prepared = {
+      ok: validationIssues.length === 0,
+      preparedOnly: true as const,
+      willSend: false as const,
+      domain: input.domain,
+      title: capability.title,
+      summary: `Prepared draft-only '${capability.title}'. No request was sent to ProPotsdam.`,
+      safetyPolicy: "No portal write request was sent." as const,
+      validationIssues,
+      targetId,
+      actionId: capability.actionId,
+      actionTitle: capability.actionTitle,
+      requiredFields: capability.requiredFields,
+      values: stringifyValues(values),
+      draft
+    };
+    return redactSecrets(prepared) as PreparedPortalWrite;
   }
 
   async preparePortalAction(id: string, values: Record<string, unknown> = {}): Promise<PreparedPortalAction> {
@@ -725,6 +1067,18 @@ export class PortalClient {
     return result;
   }
 
+  private async listStructuredInboxRecords(filter: {
+    serviceId?: string;
+    xuclass?: string;
+    domain?: PortalReadDomain;
+  }): Promise<PortalRecordItem[]> {
+    if (filter.serviceId || filter.xuclass && filter.xuclass !== "ESQ_MESSAGES" || filter.domain && filter.domain !== "notification" && filter.domain !== "unknown") {
+      return [];
+    }
+    const inbox = await this.listInbox().catch(() => ({ items: [] }));
+    return inbox.items.map(inboxItemToPortalRecord);
+  }
+
   private commitScopeIssues(action: PortalAction): string[] {
     if (action.id !== "save_partner" || action.xuclass !== "ESQ_IA_PART") {
       return ["Only Meine Daten/save_partner can be committed in this version."];
@@ -905,6 +1259,113 @@ function dedupeActions(actions: PortalAction[]): PortalAction[] {
   return [...seen.values()];
 }
 
+function actionToWriteCapability(action: PortalAction): PortalWriteCapability {
+  const domain = classifyWriteDomain(action);
+  const spec = WRITE_DOMAIN_SPECS[domain];
+  return {
+    domain,
+    title: action.title || spec.title,
+    description: spec.description,
+    source: "portal_action",
+    serviceId: action.serviceId,
+    serviceTitle: action.serviceTitle,
+    xuclass: action.xuclass,
+    actionId: action.id,
+    actionTitle: action.title,
+    actionKind: action.actionKind,
+    recordId: action.recordId,
+    recordTitle: action.recordTitle,
+    requiredFields: mergeRequiredFields(spec.requiredFields, action.fields.filter((field) => field.required && !field.hidden).map((field) => field.name)),
+    targetRequired: spec.targetRequired,
+    uploadSupported: false,
+    liveCommitSupported: false,
+    executionPolicy: "draft_only_no_live_write"
+  };
+}
+
+function classifyWriteDomain(action: PortalAction): PortalWriteDomain {
+  const haystack = [
+    action.id,
+    action.title,
+    action.serviceTitle,
+    action.xuclass,
+    action.recordTitle,
+    ...action.fields.flatMap((field) => [field.name, field.label, field.type])
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (action.actionKind === "read_confirmation") {
+    return /hausinfo|pinbrd/.test(haystack) ? "house_notice_ack" : "read_confirmation";
+  }
+  if (action.actionKind === "external_link" || action.actionKind === "navigation") {
+    return "external_navigation";
+  }
+  if (/esq_tena_dmg|reparatur|schaden|mangel|defekt/.test(haystack)) {
+    return /termin|appointment/.test(haystack) ? "repair_appointment" : "repair_report";
+  }
+  if (/esq_tena_csm|verbr[aä]uch|verbrauch|z[aä]hler|zaehler|meter/.test(haystack)) {
+    return "meter_reading";
+  }
+  if (/esq_ia_reobj|immobiliensuche|wohnung|objekt/.test(haystack)) {
+    if (/besichtigung|termin|viewing/.test(haystack)) {
+      return "viewing_booking";
+    }
+    if (/bewerbung|application/.test(haystack)) {
+      return "rental_application";
+    }
+    return "real_estate_inquiry";
+  }
+  if (/esq_ia_part|meine daten|profil|profile|partner/.test(haystack)) {
+    return "profile_account_setting";
+  }
+  if (/tier|hund|haustier/.test(haystack)) {
+    return "pet_approval";
+  }
+  if (/iban|bic|sepa|bank|zahlung|konto/.test(haystack)) {
+    return "payment_method";
+  }
+  if (/message|nachricht|reply|antwort|chat/.test(haystack)) {
+    return "workflow_reply";
+  }
+  return "service_ticket";
+}
+
+function dedupeWriteCapabilities(items: PortalWriteCapability[]): PortalWriteCapability[] {
+  const seen = new Map<string, PortalWriteCapability>();
+  for (const item of items) {
+    const key = `${item.domain}::${item.actionId ?? item.source}::${item.recordId ?? ""}`;
+    if (!seen.has(key)) {
+      seen.set(key, item);
+    }
+  }
+  return [...seen.values()];
+}
+
+function mergeRequiredFields(primary: string[], secondary: string[]): string[] {
+  return [...new Set([...primary, ...secondary])];
+}
+
+function stringifyValues(values: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value === undefined ? "" : String(value)]));
+}
+
+function inboxItemToPortalRecord(item: InboxItem): PortalRecordItem {
+  return {
+    id: item.id,
+    title: item.title,
+    date: item.date,
+    category: item.category,
+    subtitle: item.subtitle,
+    abstract: item.abstract,
+    detailUrl: item.detailUrl,
+    serviceUrl: item.serviceUrl,
+    rawSource: item.rawSource,
+    serviceTitle: "Nachrichten",
+    xuclass: "ESQ_MESSAGES",
+    itemKind: "record",
+    readable: true,
+    detailText: item.detailText
+  };
+}
+
 function sanitizePortalAction(action: PortalAction): PortalAction {
   return {
     ...action,
@@ -1017,4 +1478,9 @@ function escapeXmlAttribute(value: string): string {
   return escapeXmlText(value)
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+}
+
+function safeExportFilename(input: string): string {
+  const basename = path.basename(input).replace(/[/:\\?%*"<>|]/g, "_").trim();
+  return basename || "portal-file";
 }

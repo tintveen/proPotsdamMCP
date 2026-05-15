@@ -4,12 +4,15 @@ import {
   classifyAuthFailure,
   extractDocumentItems,
   extractInboxItems,
+  extractPortalFileItems,
   extractPortalActions,
   extractPortalRecordItems,
   extractServices,
   findSectionServices,
-  parseSessionStatus
+  parseSessionStatus,
+  toStructuredPortalRecord
 } from "../src/portal/parsers.js";
+import type { PortalRecordItem, PortalReadDomain } from "../src/types.js";
 
 function fixture(name: string): string {
   return readFileSync(new URL(`./fixtures/redacted/${name}`, import.meta.url), "utf8");
@@ -115,6 +118,60 @@ describe("portal parsers", () => {
     ]);
   });
 
+  it("extracts readable file resources without returning file bytes", () => {
+    const records = extractPortalRecordItems(fixture("generic-records.json"), "application/json", {
+      id: "fixture-service-generic",
+      title: "Allgemeine Vorgänge",
+      serviceUrl: "/synthetic/records",
+      xuclass: "SYNTHETIC_RECORDS"
+    });
+    const files = extractPortalFileItems(records);
+
+    expect(files).toEqual([
+      expect.objectContaining({
+        id: "fixture-resource-001",
+        sourceRecordId: "fixture-resource-001",
+        title: "Synthetic downloadable record",
+        filename: "synthetic-record.pdf",
+        resourceId: "fixture-resource-record-001",
+        resourceOrigin: "fixture-origin",
+        mimeType: "application/pdf",
+        exportable: true
+      })
+    ]);
+    expect(JSON.stringify(files)).not.toContain("PDFDATA");
+  });
+
+  it("classifies broad v1 structured read domains", () => {
+    const cases: Array<[PortalRecordItem, PortalReadDomain]> = [
+      [record({ id: "rent-1", title: "Mietkonto Kontostand offen 120,50 EUR", serviceTitle: "Verträge", xuclass: "ESQ_TENANT", detailText: "Zeitraum 01.2026 Adresse Hauptstr. 1" }), "rent_account"],
+      [record({ id: "contract-1", title: "Mietvertrag.pdf", serviceTitle: "Verträge", xuclass: "ESQ_TENANT", resourceId: "contract-pdf", mimeType: "application/pdf" }), "contract"],
+      [record({ id: "statement-1", title: "Betriebskostenabrechnung 2025.pdf", serviceTitle: "Dokumente", xuclass: "ESQ_DOCUMENTS", resourceId: "statement-pdf", mimeType: "application/pdf" }), "statement"],
+      [record({ id: "repair-1", title: "Schaden Heizung in Bearbeitung", serviceTitle: "Reparatur", xuclass: "ESQ_TENA_DMG" }), "repair_status"],
+      [record({ id: "service-1", title: "Tierhaltung Hund beantragt", serviceTitle: "Service", xuclass: "ESQ_TENA_SRV" }), "service_request"],
+      [record({ id: "consumption-1", title: "Zählerstand Wasser 2026", serviceTitle: "Verbräuche", xuclass: "ESQ_TENA_CSM" }), "consumption"],
+      [record({ id: "listing-1", title: "Wohnung 3 Zimmer Potsdam", serviceTitle: "Immobiliensuche", xuclass: "ESQ_IA_REOBJ" }), "real_estate_listing"],
+      [record({ id: "viewing-1", title: "Besichtigungstermin verfügbar", serviceTitle: "Immobiliensuche", xuclass: "ESQ_IA_REOBJ" }), "viewing_appointment"],
+      [record({ id: "application-1", title: "Bewerbung Status eingegangen", serviceTitle: "Immobiliensuche", xuclass: "ESQ_IA_REOBJ" }), "application_status"],
+      [record({ id: "inquiry-1", title: "Meine Anfrage offen", serviceTitle: "Meine Anfragen", xuclass: "ESQ_IA_APPO" }), "inquiry"],
+      [record({ id: "notice-1", title: "Hausinfo Treppenhaus", serviceTitle: "Meine Hausinfo", xuclass: "TN_PINBRD" }), "house_notice"],
+      [record({ id: "profile-1", title: "Meine Daten", serviceTitle: "Meine Daten", xuclass: "ESQ_IA_PART" }), "profile_setting"],
+      [record({ id: "notification-1", title: "Push Benachrichtigung aktiviert", serviceTitle: "Nachrichten", xuclass: "ESQ_MESSAGES" }), "notification"],
+      [record({ id: "$BS_CALL_LINK", title: "Externer Link", serviceTitle: "Service", xuclass: "ESQ_TENA_SRV", itemKind: "external_link" }), "external_link"],
+      [record({ id: "attachment-1", title: "Anlage Foto Schaden.jpg", serviceTitle: "Reparatur", xuclass: "ESQ_TENA_DMG", resourceId: "photo", mimeType: "image/jpeg" }), "attachment"]
+    ];
+
+    expect(cases.map(([item]) => toStructuredPortalRecord(item).domain)).toEqual(cases.map(([, domain]) => domain));
+    expect(toStructuredPortalRecord(cases[0]![0])).toMatchObject({
+      domain: "rent_account",
+      confidence: "high",
+      amount: "120,50 EUR",
+      period: "01.2026",
+      status: "offen",
+      address: "Hauptstr. 1"
+    });
+  });
+
   it("normalizes detail action form fixtures", () => {
     const actions = extractPortalActions(fixture("action-form.xml"), "application/xml", {
       id: "fixture-service-generic",
@@ -183,3 +240,14 @@ describe("portal parsers", () => {
     });
   });
 });
+
+function record(input: Partial<PortalRecordItem> & Pick<PortalRecordItem, "id" | "title" | "serviceTitle">): PortalRecordItem {
+  return {
+    itemKind: "record",
+    readable: true,
+    rawSource: "boxlist",
+    serviceId: input.serviceId ?? input.xuclass ?? input.serviceTitle,
+    serviceUrl: input.serviceUrl ?? "/fixture-service",
+    ...input
+  };
+}

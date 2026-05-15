@@ -5,9 +5,13 @@ import type {
   InboxItem,
   PortalAction,
   PortalActionField,
+  PortalFileItem,
   PortalRecordItem,
+  PortalReadDomain,
   PortalSection,
-  PortalService
+  PortalService,
+  StructuredPortalRecord,
+  StructuredPortalRecordConfidence
 } from "../types.js";
 import { collectObjects, firstScalar, flattenScalars, parseXml } from "./xml.js";
 
@@ -199,6 +203,79 @@ export function normalizeDetailText(text: string, contentType?: string): string 
   } catch {
     return text.replace(/\s+/g, " ").trim().slice(0, 8000);
   }
+}
+
+export function extractPortalFileItems(records: PortalRecordItem[]): PortalFileItem[] {
+  return dedupeBy(
+    records
+      .filter(isPortalFileRecord)
+      .map((record) => ({
+        id: record.id,
+        title: record.title,
+        sourceRecordId: record.id,
+        sourceRecordTitle: record.title,
+        serviceId: record.serviceId,
+        serviceTitle: record.serviceTitle,
+        serviceUrl: record.serviceUrl,
+        xuclass: record.xuclass,
+        filename: record.filename ?? safeFilename(record.title),
+        resourceId: record.resourceId,
+        resourceOrigin: record.resourceOrigin,
+        mimeType: record.mimeType,
+        itemKind: record.itemKind,
+        exportable: Boolean(record.serviceUrl && (record.resourceId || record.id) && record.itemKind !== "external_link")
+      })),
+    (item) => `${item.serviceId ?? ""}::${item.sourceRecordId}::${item.resourceId ?? ""}`
+  );
+}
+
+export function toStructuredPortalRecord(record: PortalRecordItem): StructuredPortalRecord {
+  const domain = classifyReadDomain(record);
+  const status = extractStatus(record);
+  const period = extractPeriod(record);
+  const amount = extractAmount(record);
+  const address = extractAddress(record);
+  const fields = compactFields({
+    serviceTitle: record.serviceTitle,
+    xuclass: record.xuclass,
+    category: record.category,
+    filename: record.filename,
+    resourceId: record.resourceId,
+    resourceOrigin: record.resourceOrigin,
+    mimeType: record.mimeType,
+    status,
+    period,
+    amount,
+    address
+  });
+
+  const structured: StructuredPortalRecord = {
+    id: record.id,
+    title: record.title,
+    sourceRecordId: record.id,
+    sourceRecordTitle: record.title,
+    serviceId: record.serviceId,
+    serviceTitle: record.serviceTitle,
+    serviceUrl: record.serviceUrl,
+    xuclass: record.xuclass,
+    domain,
+    confidence: domainConfidence(record, domain),
+    itemKind: record.itemKind,
+    readable: record.readable,
+    date: record.date,
+    category: record.category,
+    status,
+    period,
+    amount,
+    address,
+    filename: record.filename,
+    mimeType: record.mimeType,
+    fields
+  };
+  if (record.detailText) {
+    structured.detailText = record.detailText;
+  }
+  return structured;
 }
 
 function normalizeInboxCandidate(candidate: Record<string, unknown>): InboxItem | null {
@@ -604,6 +681,190 @@ function firstBoolean(input: Record<string, string>, keys: string[]): boolean | 
 
 function safeFilename(input: string): string {
   return input.replace(/[/:\\?%*"<>|]/g, "_").trim() || "document";
+}
+
+function isPortalFileRecord(record: PortalRecordItem): boolean {
+  if (record.itemKind === "external_link") {
+    return false;
+  }
+  const haystack = recordHaystack(record);
+  return Boolean(
+    record.resourceId ||
+      record.mimeType ||
+      record.filename && /\.[a-z0-9]{2,8}$/i.test(record.filename) ||
+      /\.(pdf|png|jpe?g|gif|tiff?|docx?|xlsx?|csv|txt)$/i.test(record.title) ||
+      /\b(anhang|anlage|attachment|datei|dokument|foto|photo|bild)\b/i.test(haystack)
+  );
+}
+
+function classifyReadDomain(record: PortalRecordItem): PortalReadDomain {
+  const haystack = recordHaystack(record);
+  if (record.itemKind === "external_link") {
+    return "external_link";
+  }
+  if (/\b(betriebskosten\w*|nebenkosten\w*|abrechnung\w*|jahresabrechnung\w*|statement)\b/i.test(haystack)) {
+    return "statement";
+  }
+  if (/\b(mietkonto|kontostand|saldo|buchung|zahlung|forderung|mietzahlung)\b/i.test(haystack)) {
+    return "rent_account";
+  }
+  if (/\b(mietvertrag|stellplatzvertrag|vertrag|vertragsunterlagen|lease|contract)\b/i.test(haystack)) {
+    return "contract";
+  }
+  if (isPortalFileRecord(record) && /\b(anhang|anlage|attachment|foto|photo|bild)\b/i.test(haystack)) {
+    return "attachment";
+  }
+  if (/\b(besichtigung\w*|termin\w*|viewing|appointment)\b/i.test(haystack)) {
+    return "viewing_appointment";
+  }
+  if (/\b(bewerbung\w*|application status|antragsstatus|status eingegangen)\b/i.test(haystack) || record.xuclass === "ESQ_IA_APPO" && /\b(status|bewerbung|antrag)\b/i.test(haystack)) {
+    return "application_status";
+  }
+  if (/\b(immobiliensuche|wohnung|immobilie|objekt|expos[eé]|reobj|zimmer)\b/i.test(haystack)) {
+    return "real_estate_listing";
+  }
+  if (/\b(meine anfragen|anfrage|anfragen|inquiry|ticket)\b/i.test(haystack) || record.xuclass === "ESQ_IA_APPO") {
+    return "inquiry";
+  }
+  if (/\b(reparatur|schaden|schadensmeldung|mangel|defekt|heizung|dmg)\b/i.test(haystack)) {
+    return "repair_status";
+  }
+  if (/\b(service|kundenservice|tierhaltung|haustier|hund|schlüssel|schluessel|untermieter|sepa|iban)\b/i.test(haystack)) {
+    return "service_request";
+  }
+  if (/\b(verbr[aä]uch|verbrauch|z[aä]hler|zaehler|meter|csm|wasser|strom|heizung)\b/i.test(haystack)) {
+    return "consumption";
+  }
+  if (/\b(hausinfo|pinbrd|treppenhaus|aushang|notice)\b/i.test(haystack)) {
+    return "house_notice";
+  }
+  if (/\b(meine daten|profil|profile|partner|kontaktweg|e-mail|telefon)\b/i.test(haystack) || record.xuclass === "ESQ_IA_PART") {
+    return "profile_setting";
+  }
+  if (/\b(push|benachrichtigung|notification|mitteilung)\b/i.test(haystack)) {
+    return "notification";
+  }
+  if (record.itemKind === "resource" || isPortalFileRecord(record)) {
+    return "document";
+  }
+  return "unknown";
+}
+
+function domainConfidence(record: PortalRecordItem, domain: PortalReadDomain): StructuredPortalRecordConfidence {
+  if (domain === "unknown") {
+    return "low";
+  }
+  const serviceHaystack = `${record.serviceTitle} ${record.xuclass ?? ""}`.toLowerCase();
+  const domainPrefix = domain.split("_")[0] ?? domain;
+  if (
+    domain === "external_link" ||
+    domain === "attachment" ||
+    domain === "document" ||
+    serviceHaystack.includes(domainPrefix) ||
+    serviceDomainHint(record) === domain
+  ) {
+    return "high";
+  }
+  return "medium";
+}
+
+function serviceDomainHint(record: PortalRecordItem): PortalReadDomain | undefined {
+  const haystack = `${record.serviceTitle} ${record.xuclass ?? ""}`.toLowerCase();
+  if (/mietkonto|esq_tenant/.test(haystack) && /konto|saldo|zahlung/.test(recordHaystack(record))) {
+    return "rent_account";
+  }
+  if (/verträge|vertraege|vertrag|esq_tenant/.test(haystack)) {
+    return "contract";
+  }
+  if (/reparatur|dmg/.test(haystack)) {
+    return "repair_status";
+  }
+  if (/service|srv/.test(haystack)) {
+    return "service_request";
+  }
+  if (/verbr|csm/.test(haystack)) {
+    return "consumption";
+  }
+  if (/immobiliensuche|reobj/.test(haystack)) {
+    return "real_estate_listing";
+  }
+  if (/anfragen|appo/.test(haystack)) {
+    return "inquiry";
+  }
+  if (/hausinfo|pinbrd/.test(haystack)) {
+    return "house_notice";
+  }
+  if (/meine daten|part/.test(haystack)) {
+    return "profile_setting";
+  }
+  if (/nachrichten|messages/.test(haystack)) {
+    return "notification";
+  }
+  if (/dokument|documents|docs/.test(haystack)) {
+    return "document";
+  }
+  return undefined;
+}
+
+function extractStatus(record: PortalRecordItem): string | undefined {
+  return firstMatch(recordHaystack(record), [
+    /\bin Bearbeitung\b/i,
+    /\beingegangen\b/i,
+    /\boffen\b/i,
+    /\bgeschlossen\b/i,
+    /\berledigt\b/i,
+    /\bbeantragt\b/i,
+    /\baktiviert\b/i,
+    /\bverfügbar\b/i,
+    /\bverfuegbar\b/i
+  ]);
+}
+
+function extractPeriod(record: PortalRecordItem): string | undefined {
+  return firstMatch(recordHaystack(record), [
+    /\b\d{2}\.\d{4}\b/,
+    /\b20\d{2}\b/
+  ]);
+}
+
+function extractAmount(record: PortalRecordItem): string | undefined {
+  return firstMatch(recordHaystack(record), [
+    /\b\d{1,3}(?:\.\d{3})*,\d{2}\s*(?:EUR|€)\b/i,
+    /(?:EUR|€)\s*\d{1,3}(?:\.\d{3})*,\d{2}\b/i
+  ]);
+}
+
+function extractAddress(record: PortalRecordItem): string | undefined {
+  const match = /\b(?:adresse|anschrift)\s+([^,\n]+?(?:\s+\d+[a-z]?)?)(?:\s{2,}|$)/i.exec(recordHaystack(record));
+  return match?.[1]?.trim();
+}
+
+function firstMatch(input: string, patterns: RegExp[]): string | undefined {
+  for (const pattern of patterns) {
+    const match = pattern.exec(input);
+    if (match?.[0]) {
+      return match[0].trim();
+    }
+  }
+  return undefined;
+}
+
+function recordHaystack(record: PortalRecordItem): string {
+  return [
+    record.title,
+    record.serviceTitle,
+    record.xuclass,
+    record.category,
+    record.subtitle,
+    record.abstract,
+    record.filename,
+    record.mimeType,
+    record.detailText
+  ].filter(Boolean).join(" ");
+}
+
+function compactFields(input: Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(Object.entries(input).filter((entry): entry is [string, string] => Boolean(entry[1])));
 }
 
 function dedupeBy<T>(items: T[], keyOf: (item: T) => string): T[] {

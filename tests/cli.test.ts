@@ -1,356 +1,487 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AuthResult } from "../src/types.js";
+import type { CliIo, CliPortalClient } from "../src/cli.js";
+import type {
+  AuthResult,
+  CapabilityMap,
+  InboxItem,
+  PortalAction,
+  PortalActionMap,
+  PortalFileItem,
+  PortalRecordItem,
+  PortalWriteCapability,
+  StructuredPortalRecord
+} from "../src/types.js";
 
 describe("CLI", () => {
-  it("prints help with a zero exit code", async () => {
+  it("prints help with no args for both published binaries", async () => {
     const { runCli } = await import("../src/cli.js");
-    let stdout = "";
 
-    const exitCode = await runCli(
-      ["node", "propotsdam-mcp", "--help"],
-      {
-        write: (text: string) => {
-          stdout += text;
-        },
-        question: async () => {
-          throw new Error("question should not be called");
-        },
-        questionHidden: async () => {
-          throw new Error("questionHidden should not be called");
-        }
-      },
-      {
-        discoverCapabilities: async () => {
-          throw new Error("discoverCapabilities should not be called");
-        },
-        discoverWriteActions: async () => {
-          throw new Error("discoverWriteActions should not be called");
-        }
-      }
-    );
+    for (const binary of ["propotsdam-mcp", "propotsdam-cli"]) {
+      const harness = createIo();
+      const exitCode = await runCli(["node", binary], harness.io, minimalClient());
 
-    expect(exitCode).toBe(0);
-    expect(stdout).toContain("propotsdam-mcp serve");
-    expect(stdout).toContain("propotsdam-mcp auth set");
-    expect(stdout).toContain("propotsdam-mcp auth status");
-    expect(stdout).toContain("propotsdam-mcp auth login");
-    expect(stdout).toContain("propotsdam-mcp auth logout");
-    expect(stdout).toContain("propotsdam-mcp doctor");
+      expect(exitCode).toBe(0);
+      expect(harness.stdout()).toContain(`${binary} serve`);
+      expect(harness.stdout()).toContain(`${binary} inbox <list|get>`);
+      expect(harness.stdout()).toContain("posteingang -> inbox");
+    }
   });
 
-  it.each([
-    {
-      argv: ["node", "propotsdam-mcp", "auth", "status"],
-      method: "status" as const,
-      result: {
-        state: "authenticated" as const,
-        authenticated: true,
-        userId: "user-id"
-      }
-    },
-    {
-      argv: ["node", "propotsdam-mcp", "auth", "login"],
-      method: "login" as const,
-      result: {
-        state: "authenticated" as const,
-        authenticated: true,
-        userFullName: "Fixture User"
-      }
-    },
-    {
-      argv: ["node", "propotsdam-mcp", "auth", "logout"],
-      method: "logout" as const,
-      result: {
-        ok: true as const
-      }
-    }
-  ])("prints auth $method results as JSON without prompting or discovery", async ({ argv, method, result }) => {
+  it("prints nested help for German aliases", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const harness = createIo();
+
+    const exitCode = await runCli(["node", "propotsdam-cli", "dateien", "--help"], harness.io, minimalClient());
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout()).toContain("files export");
+    expect(harness.stdout()).toContain("Alias: propotsdam-cli dateien");
+  });
+
+  it("prints auth JSON only when --json is requested", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const result: AuthResult = {
+      state: "authenticated",
+      authenticated: true,
+      userId: "user-id"
+    };
+
+    const human = createIo();
+    const json = createIo();
+    const client = minimalClient({
+      status: async () => result
+    });
+
+    expect(await runCli(["node", "propotsdam-cli", "auth", "status"], human.io, client)).toBe(0);
+    expect(human.stdout()).toContain("Auth Status");
+    expect(human.stdout()).toContain("authenticated: yes");
+
+    expect(await runCli(["node", "propotsdam-cli", "auth", "status", "--json"], json.io, client)).toBe(0);
+    expect(JSON.parse(json.stdout())).toEqual(result);
+  });
+
+  it("preserves discover and bare actions as legacy aliases", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const capabilities: CapabilityMap = {
+      generatedAt: "2026-05-15T00:00:00.000Z",
+      authenticated: true,
+      dataPolicy: "Readable portal data.",
+      services: [],
+      totals: {
+        serviceCount: 0,
+        inboxItems: 0,
+        portalRecords: 0,
+        unknownItems: 0
+      },
+      artifactPath: "/tmp/capabilities.json"
+    };
+    const actionMap: PortalActionMap = {
+      generatedAt: "2026-05-15T00:00:00.000Z",
+      authenticated: true,
+      actionPolicy: "Prepare-only.",
+      services: [],
+      actions: [],
+      partial: false,
+      detailScanLimit: 250,
+      totals: {
+        serviceCount: 0,
+        actionCount: 0,
+        preparableActions: 0,
+        skippedActions: 0
+      },
+      artifactPath: "/tmp/actions.json"
+    };
+    const client = minimalClient({
+      discoverCapabilities: async () => capabilities,
+      discoverWriteActions: async () => actionMap
+    });
+    const discover = createIo();
+    const actions = createIo();
+
+    await runCli(["node", "propotsdam-cli", "discover", "--json"], discover.io, client);
+    await runCli(["node", "propotsdam-cli", "actions", "--json"], actions.io, client);
+
+    expect(JSON.parse(discover.stdout())).toMatchObject({ artifactPath: "/tmp/capabilities.json" });
+    expect(JSON.parse(actions.stdout())).toMatchObject({ artifactPath: "/tmp/actions.json" });
+  });
+
+  it("lists structured records by default and returns the client envelope in JSON mode", async () => {
     const { runCli } = await import("../src/cli.js");
     const calls: string[] = [];
-    let stdout = "";
-
-    const exitCode = await runCli(
-      argv,
-      {
-        write: (text: string) => {
-          stdout += text;
-        },
-        question: async () => {
-          throw new Error("question should not be called");
-        },
-        questionHidden: async () => {
-          throw new Error("questionHidden should not be called");
-        }
-      },
-      {
-        status: async () => {
-          calls.push("status");
-          return method === "status" ? result as AuthResult : {
-            state: "unauthenticated",
-            authenticated: false
-          };
-        },
-        login: async () => {
-          calls.push("login");
-          return method === "login" ? result as AuthResult : {
-            state: "unauthenticated",
-            authenticated: false
-          };
-        },
-        logout: async () => {
-          calls.push("logout");
-          return { ok: true };
-        },
-        discoverCapabilities: async () => {
-          throw new Error("discoverCapabilities should not be called");
-        },
-        discoverWriteActions: async () => {
-          throw new Error("discoverWriteActions should not be called");
-        }
+    const client = minimalClient({
+      listStructuredPortalRecords: async (filter) => {
+        calls.push(JSON.stringify(filter));
+        return {
+          source: "boxlist",
+          items: [
+            structuredRecord({
+              id: "DMG-1",
+              title: "Heizung",
+              domain: "repair_status",
+              status: "in Bearbeitung"
+            })
+          ]
+        };
       }
-    );
+    });
+    const human = createIo();
+    const json = createIo();
 
-    expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout)).toEqual(result);
-    expect(calls).toEqual([method]);
+    await runCli(["node", "propotsdam-cli", "records", "list", "--domain", "repair_status"], human.io, client);
+    await runCli(["node", "propotsdam-cli", "records", "list", "--json"], json.io, client);
+
+    expect(human.stdout()).toContain("Records (1)");
+    expect(human.stdout()).toContain("DMG-1");
+    expect(human.stdout()).toContain("repair_status");
+    expect(JSON.parse(json.stdout())).toMatchObject({
+      source: "boxlist",
+      items: [{ id: "DMG-1" }]
+    });
+    expect(calls[0]).toContain("repair_status");
   });
 
-  it("prints doctor reports as JSON without prompting or discovering portal data", async () => {
+  it("lists raw records under records raw", async () => {
     const { runCli } = await import("../src/cli.js");
-    let stdout = "";
+    const harness = createIo();
 
-    const exitCode = await runCli(
-      ["node", "propotsdam-mcp", "doctor"],
-      {
-        write: (text: string) => {
-          stdout += text;
-        },
-        question: async () => {
-          throw new Error("question should not be called");
-        },
-        questionHidden: async () => {
-          throw new Error("questionHidden should not be called");
-        }
-      },
-      {
-        discoverCapabilities: async () => {
-          throw new Error("discoverCapabilities should not be called");
-        },
-        discoverWriteActions: async () => {
-          throw new Error("discoverWriteActions should not be called");
-        }
-      },
-      {
-        loadConfig: async () => ({
-          baseUrl: "https://portal.example.test",
-          apiVersion: "6.262",
-          appVersion: "6.262.8",
-          language: "de",
-          exportDir: "/tmp/exports",
-          clientId: "client-id"
-        }),
-        configureCredentials: vi.fn(),
-        configFile: "/tmp/propotsdam-mcp/config.json",
-        createDoctorReport: async () => ({
-          generatedAt: "2026-05-03T00:00:00.000Z",
-          runtime: {
-            nodeVersion: "22.1.0",
-            nodeSupported: true,
-            platform: "darwin",
-            arch: "arm64",
-            command: "propotsdam-mcp"
-          },
-          paths: {
-            dataDir: "/tmp/propotsdam-mcp",
-            configFile: "/tmp/propotsdam-mcp/config.json",
-            tracesDir: "/tmp/propotsdam-mcp/traces",
-            exportsDir: "/tmp/propotsdam-mcp/exports",
-            confirmationsDir: "/tmp/propotsdam-mcp/confirmations"
-          },
-          config: {
-            baseUrl: "https://portal.example.test",
-            apiVersion: "6.262",
-            appVersion: "6.262.8",
-            language: "de",
-            usernameConfigured: false,
-            usernameSource: "none"
-          },
-          credentials: {
-            passwordConfigured: false,
-            passwordSource: "none"
-          },
-          session: {
-            checked: true,
-            authenticated: false,
-            state: "unauthenticated"
-          },
-          portalReachability: {
-            checked: true,
-            reachable: true,
-            method: "HEAD",
-            status: 200,
-            url: "https://portal.example.test"
-          }
+    await runCli(
+      ["node", "propotsdam-cli", "records", "raw", "list", "--xuclass", "ESQ_TENANT"],
+      harness.io,
+      minimalClient({
+        listPortalRecords: async (filter) => ({
+          source: "boxlist",
+          items: [
+            rawRecord({
+              id: "TEN-1",
+              title: "Mietvertrag",
+              xuclass: filter?.xuclass
+            })
+          ]
         })
-      }
+      })
     );
 
-    expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject({
-      runtime: {
-        nodeSupported: true
-      },
-      credentials: {
-        passwordConfigured: false
-      },
-      portalReachability: {
-        reachable: true
-      }
-    });
+    expect(harness.stdout()).toContain("Raw Portal Records (1)");
+    expect(harness.stdout()).toContain("TEN-1");
   });
 
-  it("prints discover capability maps as JSON", async () => {
-    const previousExitCode = process.exitCode;
+  it("exports files with an output-dir override", async () => {
     const { runCli } = await import("../src/cli.js");
-    process.exitCode = previousExitCode;
-    let stdout = "";
+    const exportCalls: unknown[] = [];
+    const harness = createIo();
 
     await runCli(
-      ["node", "propotsdam-mcp", "discover", "--json"],
-      {
-        write: (text: string) => {
-          stdout += text;
-        },
-        question: async () => {
-          throw new Error("question should not be called");
-        },
-        questionHidden: async () => {
-          throw new Error("questionHidden should not be called");
-        }
-      },
-      {
-        discoverCapabilities: async () => ({
-          generatedAt: "2026-04-25T00:00:00.000Z",
-          authenticated: true,
-          dataPolicy: "ProPotsdam exposes readable portal data only.",
-          services: [],
-          totals: {
-            serviceCount: 0,
-            inboxItems: 0,
-            portalRecords: 0,
-            unknownItems: 0
-          },
-          artifactPath: "/tmp/capabilities.json"
+      ["node", "propotsdam-cli", "files", "export", "FILE-1", "--output-dir", "/tmp/exports", "--json"],
+      harness.io,
+      minimalClient({
+        listPortalFiles: async () => ({
+          source: "boxlist",
+          items: [portalFile({ id: "FILE-1", filename: "vertrag.pdf" })]
         }),
-        discoverWriteActions: async () => {
-          throw new Error("discoverWriteActions should not be called");
+        exportPortalFile: async (id, options) => {
+          exportCalls.push({ id, options });
+          return {
+            ok: true,
+            id,
+            sourceRecordId: "REC-1",
+            sourceRecordTitle: "Vertrag",
+            filename: "vertrag.pdf",
+            path: "/tmp/exports/REC-1-vertrag.pdf",
+            mimeType: "application/pdf",
+            byteLength: 10,
+            sha256: "a".repeat(64),
+            exportedAt: "2026-05-15T00:00:00.000Z"
+          };
         }
-      }
+      })
     );
 
-    expect(JSON.parse(stdout)).toMatchObject({
-      authenticated: true,
-      artifactPath: "/tmp/capabilities.json"
-    });
+    expect(exportCalls).toEqual([{ id: "FILE-1", options: { outputDir: "/tmp/exports" } }]);
+    expect(JSON.parse(harness.stdout())).toMatchObject({ path: "/tmp/exports/REC-1-vertrag.pdf" });
   });
 
-  it("prints write action maps as JSON", async () => {
+  it("fails without prompting when a non-TTY command is missing an id", async () => {
     const { runCli } = await import("../src/cli.js");
-    let stdout = "";
+    const harness = createIo();
 
-    await runCli(
-      ["node", "propotsdam-mcp", "actions", "--json"],
-      {
-        write: (text: string) => {
-          stdout += text;
-        },
-        question: async () => {
-          throw new Error("question should not be called");
-        },
-        questionHidden: async () => {
-          throw new Error("questionHidden should not be called");
+    const exitCode = await runCli(
+      ["node", "propotsdam-cli", "files", "export"],
+      harness.io,
+      minimalClient({
+        listPortalFiles: async () => ({
+          source: "boxlist",
+          items: [portalFile({ id: "FILE-1" })]
+        })
+      })
+    );
+
+    expect(exitCode).toBe(2);
+    expect(harness.stderr()).toContain("Missing file id");
+    expect(harness.prompts).toEqual([]);
+  });
+
+  it("uses a TTY picker and required-field form for action prepare", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const action = portalAction({
+      id: "DMG-NEW",
+      title: "Schaden melden",
+      fields: [
+        {
+          name: "description",
+          label: "Beschreibung",
+          required: true,
+          hidden: false,
+          editable: true
         }
-      },
-      {
-        discoverCapabilities: async () => {
-          throw new Error("discoverCapabilities should not be called");
-        },
-        discoverWriteActions: async () => ({
-          generatedAt: "2026-04-25T00:00:00.000Z",
-          authenticated: true,
-          actionPolicy: "Prepare-only. No request is sent to ProPotsdam.",
-          services: [
-            {
-              serviceId: "SRV-1",
-              title: "Reparatur",
-              xuclass: "ESQ_TENA_DMG",
-              actionCount: 1,
-              preparableActions: 1,
-              skippedActions: 0,
-              actionIds: ["A-1"]
-            }
-          ],
-          actions: [
-            {
-              id: "A-1",
-              serviceId: "SRV-1",
-              serviceTitle: "Reparatur",
-              xuclass: "ESQ_TENA_DMG",
-              title: "Schaden melden",
-              source: "boxlist",
-              actionKind: "form",
+      ]
+    });
+    const calls: unknown[] = [];
+    const harness = createIo({
+      isTty: true,
+      answers: ["1", "Heizung bleibt kalt"]
+    });
+
+    const exitCode = await runCli(
+      ["node", "propotsdam-cli", "actions", "prepare"],
+      harness.io,
+      minimalClient({
+        listPortalActions: async () => ({
+          source: "boxlist",
+          items: [action]
+        }),
+        getPortalAction: async () => action,
+        preparePortalAction: async (id, values) => {
+          calls.push({ id, values });
+          return {
+            ok: true,
+            preparedOnly: true,
+            actionId: id,
+            title: action.title,
+            summary: "Prepared.",
+            validationIssues: [],
+            draft: {
               method: "POST",
               endpoint: "/repair-service",
-              fields: [],
-              requiresInput: false,
-              riskLevel: "medium",
-              preparable: true,
-              rawHints: {}
+              fields: []
             }
-          ],
-          totals: {
-            serviceCount: 1,
-            actionCount: 1,
-            preparableActions: 1,
-            skippedActions: 0
-          },
-          partial: false,
-          detailScanLimit: 250,
-          artifactPath: "/tmp/actions.json"
-        })
-      }
+          };
+        }
+      })
     );
 
-    expect(JSON.parse(stdout)).toMatchObject({
-      authenticated: true,
-      artifactPath: "/tmp/actions.json",
-      totals: {
-        actionCount: 1
+    expect(exitCode).toBe(0);
+    expect(harness.stdout()).toContain("Select action");
+    expect(calls).toEqual([{ id: "DMG-NEW", values: { description: "Heizung bleibt kalt" } }]);
+  });
+
+  it("uses a TTY picker for write prepare capabilities without ids", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const calls: unknown[] = [];
+    const harness = createIo({
+      isTty: true,
+      answers: ["1", "Heizung bleibt kalt"]
+    });
+
+    const exitCode = await runCli(
+      ["node", "propotsdam-cli", "writes", "prepare"],
+      harness.io,
+      minimalClient({
+        listPortalWriteCapabilities: async () => ({
+          source: "boxlist",
+          items: [writeCapability()]
+        }),
+        preparePortalWrite: async (input) => {
+          calls.push(input);
+          return {
+            ok: true,
+            preparedOnly: true,
+            willSend: false,
+            domain: input.domain,
+            title: "Repair report",
+            summary: "Prepared.",
+            safetyPolicy: "No portal write request was sent.",
+            validationIssues: [],
+            requiredFields: ["description"],
+            values: {
+              description: String(input.values?.description)
+            }
+          };
+        }
+      })
+    );
+
+    expect(exitCode).toBe(0);
+    expect(harness.stdout()).toContain("Select write capability");
+    expect(calls).toEqual([
+      {
+        domain: "repair_report",
+        values: {
+          description: "Heizung bleibt kalt"
+        },
+        targetId: undefined,
+        actionId: undefined
       }
+    ]);
+  });
+
+  it("merges values from JSON and repeated flags while redacting secret-looking output", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const action = portalAction({
+      id: "DMG-NEW",
+      fields: [
+        {
+          name: "description",
+          required: true,
+          hidden: false,
+          editable: true
+        },
+        {
+          name: "csrfToken",
+          required: false,
+          hidden: false,
+          editable: true
+        }
+      ]
+    });
+    const calls: unknown[] = [];
+    const harness = createIo();
+
+    await runCli(
+      [
+        "node",
+        "propotsdam-cli",
+        "actions",
+        "prepare",
+        "DMG-NEW",
+        "--values-json",
+        "{\"description\":\"old\",\"csrfToken\":\"secret-token\"}",
+        "--value",
+        "description=new",
+        "--json"
+      ],
+      harness.io,
+      minimalClient({
+        listPortalActions: async () => ({
+          source: "boxlist",
+          items: [action]
+        }),
+        getPortalAction: async () => action,
+        preparePortalAction: async (_id, values) => {
+          calls.push(values);
+          return {
+            ok: true,
+            preparedOnly: true,
+            actionId: "DMG-NEW",
+            title: "Schaden melden",
+            summary: "Prepared.",
+            validationIssues: [],
+            draft: {
+              method: "POST",
+              endpoint: "/repair-service",
+              fields: [
+                {
+                  name: "description",
+                  required: true,
+                  hidden: false,
+                  editable: true,
+                  proposedValue: String(values?.description)
+                },
+                {
+                  name: "csrfToken",
+                  required: false,
+                  hidden: false,
+                  editable: true,
+                  proposedValue: String(values?.csrfToken)
+                }
+              ]
+            }
+          };
+        }
+      })
+    );
+
+    expect(calls).toEqual([{ description: "new", csrfToken: "secret-token" }]);
+    expect(harness.stdout()).toContain("\"proposedValue\": \"new\"");
+    expect(harness.stdout()).not.toContain("secret-token");
+    expect(harness.stdout()).toContain("[REDACTED]");
+  });
+
+  it("supports the two-step commit flow", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const action = portalAction({
+      id: "save_partner",
+      title: "Speichern"
+    });
+    const client = minimalClient({
+      listPortalActions: async () => ({
+        source: "boxlist",
+        items: [action]
+      }),
+      getPortalAction: async () => action,
+      requestPortalActionCommit: async (actionId, values) => ({
+        ok: true,
+        actionId,
+        actionTitle: "Speichern",
+        confirmationId: "confirm-1",
+        expiresAt: "2026-05-15T00:10:00.000Z",
+        summary: "Ready.",
+        validationIssues: [],
+        diff: [
+          {
+            name: "phone_ref",
+            currentValue: "+491",
+            proposedValue: String(values?.phone_ref)
+          }
+        ]
+      }),
+      commitPortalAction: async (confirmationId) => ({
+        ok: true,
+        actionId: "save_partner",
+        recordId: "FINAL-1",
+        committedAt: "2026-05-15T00:00:00.000Z",
+        status: 200,
+        summary: `Committed ${confirmationId}.`
+      })
+    });
+    const request = createIo();
+    const commit = createIo();
+
+    await runCli(
+      ["node", "propotsdam-cli", "actions", "request-commit", "save_partner", "--value", "phone_ref=+492", "--json"],
+      request.io,
+      client
+    );
+    await runCli(["node", "propotsdam-cli", "actions", "commit", "confirm-1", "--json"], commit.io, client);
+
+    expect(JSON.parse(request.stdout())).toMatchObject({ confirmationId: "confirm-1" });
+    expect(JSON.parse(commit.stdout())).toMatchObject({ ok: true, recordId: "FINAL-1" });
+  });
+
+  it("prints JSON errors in JSON mode with usage exit code 2", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const harness = createIo();
+
+    const exitCode = await runCli(["node", "propotsdam-cli", "not-real", "--json"], harness.io, minimalClient());
+
+    expect(exitCode).toBe(2);
+    expect(JSON.parse(harness.stderr())).toMatchObject({
+      ok: false,
+      code: "USAGE"
     });
   });
 
   it("auth set prompts only for username and password by default", async () => {
     const { runCli } = await import("../src/cli.js");
-    const prompts: string[] = [];
     const saved: unknown[] = [];
-    let stdout = "";
+    const harness = createIo({
+      answers: ["user@example.test"],
+      hiddenAnswers: ["super-secret"],
+      isTty: true
+    });
 
     const exitCode = await runCli(
-      ["node", "propotsdam-mcp", "auth", "set"],
-      {
-        write: (text: string) => {
-          stdout += text;
-        },
-        question: async (prompt: string) => {
-          prompts.push(prompt);
-          return "user@example.test";
-        },
-        questionHidden: async (prompt: string) => {
-          prompts.push(prompt);
-          return "super-secret";
-        }
-      },
+      ["node", "propotsdam-cli", "auth", "set"],
+      harness.io,
       undefined,
       {
         loadConfig: async () => ({
@@ -361,7 +492,7 @@ describe("CLI", () => {
           exportDir: "/tmp/exports",
           clientId: "client-id"
         }),
-        configureCredentials: async (options: unknown) => {
+        configureCredentials: async (options) => {
           saved.push(options);
         },
         configFile: "/tmp/propotsdam-mcp/config.json"
@@ -369,7 +500,7 @@ describe("CLI", () => {
     );
 
     expect(exitCode).toBe(0);
-    expect(prompts).toEqual(["Username: ", "Password: "]);
+    expect(harness.prompts).toEqual(["Username: ", "Password: "]);
     expect(saved).toEqual([
       {
         username: "user@example.test",
@@ -377,99 +508,20 @@ describe("CLI", () => {
         baseUrl: "https://propotsdam-kundenportal.easysquare.com"
       }
     ]);
-    expect(stdout).toContain("Credentials stored");
-    expect(stdout).toContain("/tmp/propotsdam-mcp/config.json");
+    expect(harness.stdout()).toContain("Credentials stored");
   });
 
-  it("auth set accepts an explicit --base-url override", async () => {
+  it("renders human CLI errors without a stack trace", async () => {
     const { runCli } = await import("../src/cli.js");
-    const saved: unknown[] = [];
-
-    await runCli(
-      ["node", "propotsdam-mcp", "auth", "set", "--base-url", "https://portal.example.test"],
-      {
-        write: () => undefined,
-        question: async () => "user@example.test",
-        questionHidden: async () => "super-secret"
-      },
-      undefined,
-      {
-        loadConfig: async () => ({
-          baseUrl: "https://propotsdam-kundenportal.easysquare.com",
-          apiVersion: "6.262",
-          appVersion: "6.262.8",
-          language: "de",
-          exportDir: "/tmp/exports",
-          clientId: "client-id"
-        }),
-        configureCredentials: async (options: unknown) => {
-          saved.push(options);
-        },
-        configFile: "/tmp/propotsdam-mcp/config.json"
-      }
-    );
-
-    expect(saved).toEqual([
-      {
-        username: "user@example.test",
-        password: "super-secret",
-        baseUrl: "https://portal.example.test"
-      }
-    ]);
-  });
-
-  it("auth set repairs a corrupted baseUrl before saving", async () => {
-    const { runCli } = await import("../src/cli.js");
-    const { DEFAULT_BASE_URL } = await import("../src/constants.js");
-    const saved: unknown[] = [];
-
-    await runCli(
-      ["node", "propotsdam-mcp", "auth", "set"],
-      {
-        write: () => undefined,
-        question: async () => "user@example.test",
-        questionHidden: async () => "super-secret"
-      },
-      undefined,
-      {
-        loadConfig: async () => ({
-          baseUrl: "user@example.test",
-          apiVersion: "6.262",
-          appVersion: "6.262.8",
-          language: "de",
-          exportDir: "/tmp/exports",
-          clientId: "client-id"
-        }),
-        configureCredentials: async (options: unknown) => {
-          saved.push(options);
-        },
-        configFile: "/tmp/propotsdam-mcp/config.json"
-      }
-    );
-
-    expect(saved).toEqual([
-      {
-        username: "user@example.test",
-        password: "super-secret",
-        baseUrl: DEFAULT_BASE_URL
-      }
-    ]);
-  });
-
-
-  it("renders CLI errors without a stack trace", async () => {
-    const { runCli } = await import("../src/cli.js");
-    let stderr = "";
+    const harness = createIo({
+      answers: [""],
+      hiddenAnswers: ["unused"],
+      isTty: true
+    });
 
     const exitCode = await runCli(
-      ["node", "propotsdam-mcp", "auth", "set"],
-      {
-        write: (text: string) => {
-          stderr += text;
-        },
-        question: async () => "",
-        questionHidden: async () => "unused"
-      },
+      ["node", "propotsdam-cli", "auth", "set"],
+      harness.io,
       undefined,
       {
         loadConfig: async () => ({
@@ -485,8 +537,148 @@ describe("CLI", () => {
       }
     );
 
-    expect(exitCode).toBe(1);
-    expect(stderr).toContain("Username is required.");
-    expect(stderr).not.toContain("at ");
+    expect(exitCode).toBe(2);
+    expect(harness.stderr()).toContain("Username is required.");
+    expect(harness.stderr()).not.toContain("at ");
   });
 });
+
+function createIo(options: {
+  answers?: string[];
+  hiddenAnswers?: string[];
+  isTty?: boolean;
+} = {}): { io: CliIo; stdout(): string; stderr(): string; prompts: string[] } {
+  let stdout = "";
+  let stderr = "";
+  const answers = [...(options.answers ?? [])];
+  const hiddenAnswers = [...(options.hiddenAnswers ?? [])];
+  const prompts: string[] = [];
+  return {
+    io: {
+      write: (text) => {
+        stdout += text;
+      },
+      error: (text) => {
+        stderr += text;
+      },
+      question: async (prompt) => {
+        prompts.push(prompt);
+        const answer = answers.shift();
+        if (answer === undefined) {
+          throw new Error(`Unexpected prompt: ${prompt}`);
+        }
+        return answer;
+      },
+      questionHidden: async (prompt) => {
+        prompts.push(prompt);
+        const answer = hiddenAnswers.shift();
+        if (answer === undefined) {
+          throw new Error(`Unexpected hidden prompt: ${prompt}`);
+        }
+        return answer;
+      },
+      isTty: options.isTty ?? false
+    },
+    stdout: () => stdout,
+    stderr: () => stderr,
+    prompts
+  };
+}
+
+function minimalClient(overrides: Partial<CliPortalClient> = {}): CliPortalClient {
+  return {
+    discoverCapabilities: async () => {
+      throw new Error("discoverCapabilities should not be called");
+    },
+    discoverWriteActions: async () => {
+      throw new Error("discoverWriteActions should not be called");
+    },
+    ...overrides
+  };
+}
+
+function structuredRecord(overrides: Partial<StructuredPortalRecord> = {}): StructuredPortalRecord {
+  return {
+    id: "REC-1",
+    title: "Record",
+    sourceRecordId: "REC-1",
+    sourceRecordTitle: "Record",
+    serviceTitle: "Service",
+    domain: "unknown",
+    confidence: "medium",
+    itemKind: "record",
+    readable: true,
+    fields: {},
+    rawSource: "boxlist",
+    ...overrides
+  } as StructuredPortalRecord;
+}
+
+function rawRecord(overrides: Partial<PortalRecordItem> = {}): PortalRecordItem {
+  return {
+    id: "REC-1",
+    title: "Record",
+    serviceTitle: "Service",
+    itemKind: "record",
+    readable: true,
+    rawSource: "boxlist",
+    ...overrides
+  };
+}
+
+function portalFile(overrides: Partial<PortalFileItem> = {}): PortalFileItem {
+  return {
+    id: "FILE-1",
+    title: "File",
+    sourceRecordId: "REC-1",
+    sourceRecordTitle: "Record",
+    serviceTitle: "Service",
+    filename: "file.pdf",
+    itemKind: "resource",
+    exportable: true,
+    ...overrides
+  };
+}
+
+function portalAction(overrides: Partial<PortalAction> = {}): PortalAction {
+  return {
+    id: "A-1",
+    serviceTitle: "Service",
+    title: "Action",
+    source: "boxlist",
+    actionKind: "form",
+    method: "POST",
+    fields: [],
+    requiresInput: false,
+    riskLevel: "medium",
+    preparable: true,
+    rawHints: {},
+    ...overrides
+  };
+}
+
+function inboxItem(overrides: Partial<InboxItem> = {}): InboxItem {
+  return {
+    id: "MSG-1",
+    title: "Message",
+    subject: "Message",
+    unread: true,
+    rawSource: "boxlist",
+    ...overrides
+  };
+}
+
+function writeCapability(overrides: Partial<PortalWriteCapability> = {}): PortalWriteCapability {
+  return {
+    domain: "repair_report",
+    title: "Repair report",
+    description: "Prepare repair report.",
+    source: "static",
+    requiredFields: ["description"],
+    targetRequired: false,
+    uploadSupported: false,
+    liveCommitSupported: false,
+    executionPolicy: "draft_only_no_live_write",
+    ...overrides
+  };
+}

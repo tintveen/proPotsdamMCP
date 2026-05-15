@@ -20,6 +20,7 @@ describe("capability discovery", () => {
       { title: "Postfach", serviceUrl: "/msg", xuclass: "ESQ_MESSAGES", raw: {} },
       { title: "Dokumente", serviceUrl: "/docs", xuclass: "ESQ_DOCUMENTS", raw: {} },
       { title: "Verträge", serviceUrl: "/tenant", xuclass: "ESQ_TENANT", raw: {} },
+      { title: "Meine Anfragen", serviceUrl: "/inquiries", xuclass: "ESQ_IA_APPO", raw: {} },
       { title: "Schadensmeldung", serviceUrl: "/repair", xuclass: "REPAIR", raw: {} }
     ];
 
@@ -27,10 +28,12 @@ describe("capability discovery", () => {
       "inbox",
       "documents",
       "generic",
+      "generic",
       "unknown"
     ]);
     expect(classifyServiceCapability(services[1]!).readable).toBe(true);
     expect(classifyServiceCapability(services[2]!).readable).toBe(true);
+    expect(classifyServiceCapability(services[3]!).readable).toBe(true);
   });
 
   it("extracts generic records without exposing download consent wording", async () => {

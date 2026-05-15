@@ -38,6 +38,20 @@ export class CookieSession {
     return this.request(pathOrUrl, { ...init, method: "GET" });
   }
 
+  async getBinary(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse<Uint8Array>> {
+    const response = await this.requestRaw(pathOrUrl, { ...init, method: "GET" });
+    await this.storeCookies(response, this.buildUrl(pathOrUrl));
+    this.captureCsrf(response);
+    return {
+      status: response.status,
+      ok: response.ok,
+      url: response.url,
+      headers: response.headers,
+      body: new Uint8Array(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") ?? undefined
+    };
+  }
+
   async post(pathOrUrl: string, body?: BodyInit, init: RequestInit = {}): Promise<HttpResponse> {
     return this.request(pathOrUrl, { ...init, body, method: "POST" });
   }

@@ -207,6 +207,84 @@ describe("PortalClient HTTP flow", () => {
     expect(JSON.stringify(records)).not.toMatch(/download|candidate|safeDownload|downloadable/i);
   });
 
+  it("lists and exports portal file resources without returning bytes inline", async () => {
+    const { client, requests, paths: storagePaths } = await createMockClient({
+      loggedServicesBody: servicesWithGenericSection()
+    });
+
+    const files = await client.listPortalFiles({ xuclass: "ESQ_TENANT" });
+    const exported = await client.exportPortalFile("REC-1");
+    const exportedBody = await readFile(exported.path, "utf8");
+
+    expect(files.items).toEqual([
+      expect.objectContaining({
+        id: "REC-1",
+        sourceRecordId: "REC-1",
+        filename: "Mietvertrag.pdf",
+        resourceId: "RES-1",
+        resourceOrigin: "ARCHIVE",
+        mimeType: "application/pdf",
+        exportable: true
+      })
+    ]);
+    expect(exported).toMatchObject({
+      ok: true,
+      id: "REC-1",
+      sourceRecordId: "REC-1",
+      filename: "Mietvertrag.pdf",
+      mimeType: "application/pdf",
+      byteLength: 10,
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
+    expect(exported.path.startsWith(storagePaths.exportsDir)).toBe(true);
+    expect(exportedBody).toBe("GENERICPDF");
+    expect(JSON.stringify(exported)).not.toContain("GENERICPDF");
+    expect(requests.some((request) => request.url.includes("id=RES-1") && request.url.includes("resourceOrigin=ARCHIVE"))).toBe(true);
+  });
+
+  it("lists broad structured read models including Meine Anfragen", async () => {
+    const { client } = await createMockClient({
+      loggedServicesBody: servicesWithReadGaps(),
+      readGapBoxlists: true
+    });
+
+    const structured = await client.listStructuredPortalRecords();
+    const domains = structured.items.map((item) => item.domain);
+    const inquiry = await client.getStructuredPortalRecord("INQ-1");
+    const repairs = await client.listStructuredPortalRecords({ domain: "repair_status" });
+
+    expect(domains).toEqual(expect.arrayContaining([
+      "rent_account",
+      "contract",
+      "statement",
+      "repair_status",
+      "service_request",
+      "consumption",
+      "real_estate_listing",
+      "viewing_appointment",
+      "application_status",
+      "inquiry",
+      "house_notice",
+      "profile_setting",
+      "notification",
+      "external_link",
+      "attachment"
+    ]));
+    expect(inquiry).toMatchObject({
+      id: "INQ-1",
+      domain: "inquiry",
+      serviceTitle: "Meine Anfragen",
+      detailText: expect.stringContaining("Detail for INQ-1")
+    });
+    expect(repairs.items).toEqual([
+      expect.objectContaining({
+        id: "DMG-1",
+        domain: "repair_status",
+        status: "in Bearbeitung"
+      })
+    ]);
+  });
+
   it("discovers and prepares portal actions without sending writes", async () => {
     const { client, requests, tempDir } = await createMockClient({
       loggedServicesBody: servicesWithActions(),
@@ -252,6 +330,76 @@ describe("PortalClient HTTP flow", () => {
     expect(artifact).not.toContain("csrf-secret");
     expect(artifact).not.toContain("sid=abc");
     expect(artifact).not.toContain("csrf-token");
+    expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
+  });
+
+  it("lists every missing write capability as draft-only and prepares without live writes", async () => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithActions(),
+      actionBoxlists: true
+    });
+
+    const capabilities = await client.listPortalWriteCapabilities();
+    const domains = new Set(capabilities.items.map((item) => item.domain));
+    const repair = await client.preparePortalWrite({
+      domain: "repair_report",
+      actionId: "DMG-NEW",
+      values: {
+        description: "Heizung bleibt kalt"
+      }
+    });
+    const passwordChange = await client.preparePortalWrite({
+      domain: "password_change",
+      values: {
+        currentPassword: "old-secret",
+        newPassword: "new-secret"
+      }
+    });
+
+    expect([...domains]).toEqual(expect.arrayContaining([
+      "inbox_compose",
+      "inbox_reply",
+      "inbox_state",
+      "workflow_reply",
+      "read_confirmation",
+      "repair_report",
+      "repair_file_upload",
+      "repair_appointment",
+      "service_ticket",
+      "pet_approval",
+      "payment_method",
+      "meter_reading",
+      "house_notice_ack",
+      "real_estate_inquiry",
+      "viewing_booking",
+      "rental_application",
+      "registration_activation",
+      "password_change",
+      "terms_acceptance",
+      "account_verification",
+      "captcha_completion",
+      "profile_account_setting",
+      "external_navigation"
+    ]));
+    expect(capabilities.items.every((item) => item.liveCommitSupported === false)).toBe(true);
+    expect(repair).toMatchObject({
+      ok: true,
+      preparedOnly: true,
+      willSend: false,
+      domain: "repair_report",
+      actionId: "DMG-NEW",
+      draft: {
+        endpoint: "/repair-service"
+      }
+    });
+    expect(passwordChange).toMatchObject({
+      ok: true,
+      preparedOnly: true,
+      willSend: false,
+      domain: "password_change"
+    });
+    expect(JSON.stringify(passwordChange)).not.toContain("old-secret");
+    expect(JSON.stringify(passwordChange)).not.toContain("new-secret");
     expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
   });
 
@@ -402,6 +550,7 @@ async function createMockClient(options: {
   loggedServicesBody?: string;
   apiServicesBody?: string;
   actionBoxlists?: boolean;
+  readGapBoxlists?: boolean;
 } = {}) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
   tempDirs.push(tempDir);
@@ -460,6 +609,13 @@ async function createMockClient(options: {
           <HEAD><LOGGED>X</LOGGED><USER_ID>MAX</USER_ID></HEAD>
         </SERVICE></asx:values></asx:abap>
       `, { status: 200, headers: { "content-type": "application/xml" } });
+    }
+
+    if (options.readGapBoxlists && requestUrl.includes("name=boxlist")) {
+      const records = recordsForReadGapService(requestUrl);
+      if (records) {
+        return new Response(records, { status: 200, headers: { "content-type": "application/xml" } });
+      }
     }
 
     if (requestUrl.includes("/docs-service") && requestUrl.includes("name=boxlist")) {
@@ -530,6 +686,13 @@ async function createMockClient(options: {
 
     if (requestUrl.includes("/messages-service") && requestUrl.includes("id=MSG-1")) {
       return new Response("<detail><text>Detail for MSG-1</text></detail>", {
+        status: 200,
+        headers: { "content-type": "application/xml" }
+      });
+    }
+
+    if (requestUrl.includes("/inquiry-service") && requestUrl.includes("id=INQ-1")) {
+      return new Response("<detail><text>Detail for INQ-1</text></detail>", {
         status: 200,
         headers: { "content-type": "application/xml" }
       });
@@ -674,6 +837,114 @@ function servicesWithActions(): string {
       </FOLDERS>
     </SERVICE></asx:values></asx:abap>
   `;
+}
+
+function servicesWithReadGaps(): string {
+  const services = [
+    ["Nachrichten", "/messages-service", "ESQ_MESSAGES"],
+    ["Dokumente", "/docs-service", "ESQ_DOCUMENTS"],
+    ["Verträge", "/tenant-service", "ESQ_TENANT"],
+    ["Reparatur", "/repair-service", "ESQ_TENA_DMG"],
+    ["Service", "/service-service", "ESQ_TENA_SRV"],
+    ["Verbräuche", "/consumption-service", "ESQ_TENA_CSM"],
+    ["Meine Hausinfo", "/pinboard-service", "TN_PINBRD"],
+    ["Immobiliensuche", "/real-estate-service", "ESQ_IA_REOBJ"],
+    ["Meine Anfragen", "/inquiry-service", "ESQ_IA_APPO"],
+    ["Meine Daten", "/profile-service", "ESQ_IA_PART"]
+  ];
+  return `
+    <asx:abap><asx:values><SERVICE>
+      <HEAD><LOGGED>X</LOGGED><USER_ID>MAX</USER_ID></HEAD>
+      <FOLDERS>
+        ${services.map(([title, serviceUrl, xuclass]) => `
+          <SERVICE_NODE>
+            <title>${title}</title>
+            <SERVICE>${serviceUrl}</SERVICE>
+            <XUCLASS>${xuclass}</XUCLASS>
+          </SERVICE_NODE>
+        `).join("")}
+      </FOLDERS>
+    </SERVICE></asx:values></asx:abap>
+  `;
+}
+
+function recordsForReadGapService(requestUrl: string): string | undefined {
+  if (requestUrl.includes("/messages-service")) {
+    return `
+      <boxlist>
+        <box><id>NOTE-1</id><title>Push Benachrichtigung aktiviert</title></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/docs-service")) {
+    return `
+      <boxlist>
+        <box><id>STMT-1</id><title>Betriebskostenabrechnung 2025.pdf</title><resourceId>STMT-PDF</resourceId><mimeType>application/pdf</mimeType></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/tenant-service")) {
+    return `
+      <boxlist>
+        <box><id>RENT-1</id><title>Mietkonto Kontostand offen 120,50 EUR Zeitraum 01.2026</title></box>
+        <box><id>CONTRACT-1</id><title>Mietvertrag.pdf</title><resourceId>CONTRACT-PDF</resourceId><mimeType>application/pdf</mimeType></box>
+        <box><id>$BS_CALL_LINK</id><title>Externer Link zum Mietportal</title><url>https://example.test/tenant</url></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/repair-service")) {
+    return `
+      <boxlist>
+        <box><id>DMG-1</id><title>Schaden Heizung in Bearbeitung</title></box>
+        <box><id>ATT-1</id><title>Anlage Foto Schaden.jpg</title><resourceId>ATT-PHOTO</resourceId><mimeType>image/jpeg</mimeType></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/service-service")) {
+    return `
+      <boxlist>
+        <box><id>SRV-1</id><title>Tierhaltung Hund beantragt</title></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/consumption-service")) {
+    return `
+      <boxlist>
+        <box><id>CSM-1</id><title>Zählerstand Wasser 2026</title></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/pinboard-service")) {
+    return `
+      <boxlist>
+        <box><id>PIN-1</id><title>Hausinfo Treppenhaus</title></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/real-estate-service")) {
+    return `
+      <boxlist>
+        <box><id>REOBJ-1</id><title>Wohnung 3 Zimmer Potsdam</title></box>
+        <box><id>VIEW-1</id><title>Besichtigungstermin verfügbar</title></box>
+        <box><id>APP-1</id><title>Bewerbung Status eingegangen</title></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/inquiry-service")) {
+    return `
+      <boxlist>
+        <box><id>INQ-1</id><title>Meine Anfrage offen</title></box>
+      </boxlist>
+    `;
+  }
+  if (requestUrl.includes("/profile-service")) {
+    return `
+      <boxlist>
+        <box><id>PROFILE-1</id><title>Meine Daten</title></box>
+      </boxlist>
+    `;
+  }
+  return undefined;
 }
 
 function actionForService(requestUrl: string): string | undefined {

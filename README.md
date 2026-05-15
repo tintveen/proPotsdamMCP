@@ -19,7 +19,7 @@ codex mcp add propotsdam -- npx -y propotsdam-mcp serve
 Store your portal credentials once:
 
 ```bash
-npx -y propotsdam-mcp auth set
+npx -y propotsdam-cli auth set
 ```
 
 Requirements: Node.js 22+, npm/npx, macOS Keychain, and a ProPotsdam/Easysquare account.
@@ -29,6 +29,38 @@ For the normal ProPotsdam portal, credential setup does not need a base URL. Loc
 ```text
 ~/Library/Application Support/propotsdam-mcp/
 ```
+
+## CLI
+
+The package publishes two commands that share the same local credentials and data directory:
+
+- `propotsdam-mcp serve` starts the MCP server.
+- `propotsdam-cli` is the terminal and agent-friendly CLI.
+
+Both binaries accept the same commands. Running either one without arguments prints help; the MCP server is started only with `serve`.
+
+```bash
+npx -y propotsdam-cli auth status
+npx -y propotsdam-cli inbox list
+npx -y propotsdam-cli records list --domain repair_status
+npx -y propotsdam-cli records raw get REC-1 --json
+npx -y propotsdam-cli files export REC-1 --output-dir /tmp/propotsdam-exports
+npx -y propotsdam-cli actions list --kind form
+npx -y propotsdam-cli actions prepare DMG-NEW --value description="Heizung bleibt kalt"
+npx -y propotsdam-cli actions request-commit save_partner --value phone_ref="+491234567"
+npx -y propotsdam-cli actions commit <confirmation-id>
+npx -y propotsdam-cli writes list --domain repair_report
+```
+
+Human output uses compact tables for lists and readable detail sections for single records. Add `--json` to get redacted machine-readable output using the underlying client result shape, for example `{ "items": [...], "source": "boxlist" }`.
+
+TTY sessions can guide missing ids and write fields with prompts. Non-interactive runs never prompt; pass ids and values explicitly with `--value key=value`, `--values-json '{"key":"value"}'`, or `--values-file values.json`.
+
+German aliases are available for common groups:
+
+- `posteingang` for `inbox`
+- `dateien` for `files`
+- `aktionen` for `actions`
 
 ## Tools
 
@@ -41,8 +73,14 @@ For the normal ProPotsdam portal, credential setup does not need a base URL. Loc
 - `propotsdam_get_inbox_item`
 - `propotsdam_list_portal_records`
 - `propotsdam_get_portal_record`
+- `propotsdam_list_portal_files`
+- `propotsdam_export_portal_file`
+- `propotsdam_list_structured_portal_records`
+- `propotsdam_get_structured_portal_record`
 - `propotsdam_list_portal_actions`
 - `propotsdam_get_portal_action`
+- `propotsdam_list_portal_write_capabilities`
+- `propotsdam_prepare_portal_write`
 - `propotsdam_prepare_portal_action`
 - `propotsdam_request_portal_action_commit`
 - `propotsdam_commit_portal_action`

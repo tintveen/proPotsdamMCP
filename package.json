@@ -4,7 +4,8 @@
   "description": "Local MCP server for the ProPotsdam customer portal",
   "type": "module",
   "bin": {
-    "propotsdam-mcp": "dist/cli.js"
+    "propotsdam-mcp": "dist/cli.js",
+    "propotsdam-cli": "dist/cli.js"
   },
   "files": [
     "dist/",

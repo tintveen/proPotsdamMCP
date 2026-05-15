@@ -76,6 +76,82 @@ export interface PortalRecordItem extends BasePortalItem {
   detailText?: string;
 }
 
+export interface PortalFileItem {
+  id: string;
+  title: string;
+  sourceRecordId: string;
+  sourceRecordTitle: string;
+  serviceId?: string;
+  serviceTitle: string;
+  serviceUrl?: string;
+  xuclass?: string;
+  filename: string;
+  resourceId?: string;
+  resourceOrigin?: string;
+  mimeType?: string;
+  itemKind: PortalRecordKind;
+  exportable: boolean;
+}
+
+export interface PortalFileExportResult {
+  ok: true;
+  id: string;
+  sourceRecordId: string;
+  sourceRecordTitle: string;
+  filename: string;
+  path: string;
+  mimeType?: string;
+  byteLength: number;
+  sha256: string;
+  exportedAt: string;
+}
+
+export type PortalReadDomain =
+  | "rent_account"
+  | "contract"
+  | "statement"
+  | "repair_status"
+  | "service_request"
+  | "consumption"
+  | "real_estate_listing"
+  | "viewing_appointment"
+  | "application_status"
+  | "inquiry"
+  | "house_notice"
+  | "profile_setting"
+  | "notification"
+  | "external_link"
+  | "document"
+  | "attachment"
+  | "unknown";
+
+export type StructuredPortalRecordConfidence = "high" | "medium" | "low";
+
+export interface StructuredPortalRecord {
+  id: string;
+  title: string;
+  sourceRecordId: string;
+  sourceRecordTitle: string;
+  serviceId?: string;
+  serviceTitle: string;
+  serviceUrl?: string;
+  xuclass?: string;
+  domain: PortalReadDomain;
+  confidence: StructuredPortalRecordConfidence;
+  itemKind: PortalRecordKind;
+  readable: boolean;
+  date?: string;
+  category?: string;
+  status?: string;
+  period?: string;
+  amount?: string;
+  address?: string;
+  filename?: string;
+  mimeType?: string;
+  fields: Record<string, string>;
+  detailText?: string;
+}
+
 export interface ListResult<T> {
   items: T[];
   source: "services" | "boxlist";
@@ -215,6 +291,68 @@ export interface PortalActionCommitRequest {
     currentValue?: string;
     proposedValue: string;
   }>;
+}
+
+export type PortalWriteDomain =
+  | "inbox_compose"
+  | "inbox_reply"
+  | "inbox_state"
+  | "workflow_reply"
+  | "read_confirmation"
+  | "repair_report"
+  | "repair_file_upload"
+  | "repair_appointment"
+  | "service_ticket"
+  | "pet_approval"
+  | "payment_method"
+  | "meter_reading"
+  | "house_notice_ack"
+  | "real_estate_inquiry"
+  | "viewing_booking"
+  | "rental_application"
+  | "registration_activation"
+  | "password_change"
+  | "terms_acceptance"
+  | "account_verification"
+  | "captcha_completion"
+  | "profile_account_setting"
+  | "external_navigation";
+
+export interface PortalWriteCapability {
+  domain: PortalWriteDomain;
+  title: string;
+  description: string;
+  source: "portal_action" | "static";
+  serviceId?: string;
+  serviceTitle?: string;
+  xuclass?: string;
+  actionId?: string;
+  actionTitle?: string;
+  actionKind?: PortalActionKind;
+  recordId?: string;
+  recordTitle?: string;
+  requiredFields: string[];
+  targetRequired: boolean;
+  uploadSupported: boolean;
+  liveCommitSupported: false;
+  executionPolicy: "draft_only_no_live_write";
+}
+
+export interface PreparedPortalWrite {
+  ok: boolean;
+  preparedOnly: true;
+  willSend: false;
+  domain: PortalWriteDomain;
+  title: string;
+  summary: string;
+  safetyPolicy: "No portal write request was sent.";
+  validationIssues: string[];
+  targetId?: string;
+  actionId?: string;
+  actionTitle?: string;
+  requiredFields: string[];
+  values: Record<string, string>;
+  draft?: PreparedPortalAction["draft"];
 }
 
 export interface StoredPortalActionConfirmation {

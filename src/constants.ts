@@ -40,6 +40,8 @@ export const GENERIC_SERVICE_ALIASES = [
   "hausinfo",
   "pinbrd",
   "immobiliensuche",
+  "meine anfragen",
+  "anfragen",
   "meine daten",
   "ESQ_TENANT",
   "ESQ_TENA_DMG",
@@ -47,6 +49,7 @@ export const GENERIC_SERVICE_ALIASES = [
   "ESQ_TENA_CSM",
   "TN_PINBRD",
   "ESQ_IA_REOBJ",
+  "ESQ_IA_APPO",
   "ESQ_IA_PART"
 ].map((value) => value.toLowerCase());
 
