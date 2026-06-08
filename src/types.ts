@@ -195,6 +195,12 @@ export interface CapabilityMap {
 export type PortalActionKind = "form" | "portal_action" | "read_confirmation" | "external_link" | "navigation" | "ambiguous";
 export type PortalActionRiskLevel = "none" | "low" | "medium" | "high";
 
+export interface PortalActionFieldOption {
+  value: string;
+  label?: string;
+  selected?: boolean;
+}
+
 export interface PortalActionField {
   name: string;
   portalId?: string;
@@ -204,6 +210,7 @@ export interface PortalActionField {
   hidden: boolean;
   editable: boolean;
   value?: string;
+  options?: PortalActionFieldOption[];
 }
 
 export interface PortalAction {
@@ -273,6 +280,7 @@ export interface PreparedPortalAction {
       editable: boolean;
       currentValue?: string;
       proposedValue?: string;
+      options?: PortalActionFieldOption[];
     }>;
   };
 }
@@ -291,6 +299,11 @@ export interface PortalActionCommitRequest {
     currentValue?: string;
     proposedValue: string;
   }>;
+}
+
+export interface PortalActionCommitTarget {
+  recordId?: string;
+  serviceId?: string;
 }
 
 export type PortalWriteDomain =
@@ -334,8 +347,8 @@ export interface PortalWriteCapability {
   requiredFields: string[];
   targetRequired: boolean;
   uploadSupported: boolean;
-  liveCommitSupported: false;
-  executionPolicy: "draft_only_no_live_write";
+  liveCommitSupported: boolean;
+  executionPolicy: "draft_only_no_live_write" | "confirmation_required_live_commit";
 }
 
 export interface PreparedPortalWrite {
@@ -359,6 +372,7 @@ export interface StoredPortalActionConfirmation {
   confirmationId: string;
   actionId: string;
   actionTitle: string;
+  serviceId?: string;
   recordId?: string;
   recordTitle?: string;
   xuclass?: string;

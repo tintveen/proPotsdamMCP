@@ -34,6 +34,7 @@ import type {
   PortalAction,
   PortalActionField,
   PortalActionCommitRequest,
+  PortalActionCommitTarget,
   PortalActionMap,
   PortalCommitResult,
   PortalRecordItem,
@@ -621,6 +622,37 @@ export class PortalClient {
     return match;
   }
 
+  private async resolveCommitAction(
+    actionId: string,
+    target: PortalActionCommitTarget = {}
+  ): Promise<{ action?: PortalAction; validationIssues: string[] }> {
+    const actions = await this.listPortalActions();
+    let candidates = actions.items.filter((action) => action.id === actionId || action.title === actionId);
+    if (target.recordId) {
+      candidates = candidates.filter((action) => action.recordId === target.recordId);
+    }
+    if (target.serviceId) {
+      candidates = candidates.filter((action) => action.serviceId === target.serviceId);
+    }
+    if (candidates.length === 0) {
+      throw new PortalError(`Portal action '${actionId}' was not found.`, "NOT_FOUND", 404);
+    }
+
+    const supported = candidates.filter(isSupportedCommitAction);
+    if (supported.length === 1) {
+      return { action: supported[0]!, validationIssues: [] };
+    }
+    if (supported.length > 1 || candidates.length > 1) {
+      return {
+        validationIssues: [
+          `Portal action '${actionId}' is ambiguous. Provide recordId or serviceId to choose one of ${supported.length || candidates.length} matching actions.`
+        ]
+      };
+    }
+
+    return { action: candidates[0]!, validationIssues: [] };
+  }
+
   async listPortalWriteCapabilities(filter: {
     domain?: PortalWriteDomain;
     serviceId?: string;
@@ -717,8 +749,12 @@ export class PortalClient {
 
   async preparePortalAction(id: string, values: Record<string, unknown> = {}): Promise<PreparedPortalAction> {
     const action = await this.getPortalAction(id);
+    return this.prepareResolvedPortalAction(action, values);
+  }
+
+  private prepareResolvedPortalAction(action: PortalAction, values: Record<string, unknown> = {}): PreparedPortalAction {
     if (!action.preparable) {
-      throw new PortalError(`Portal action '${id}' is not preparable: ${action.notPreparableReason ?? "unknown"}.`, "ACTION_NOT_PREPARABLE");
+      throw new PortalError(`Portal action '${action.id}' is not preparable: ${action.notPreparableReason ?? "unknown"}.`, "ACTION_NOT_PREPARABLE");
     }
 
     const validationIssues = action.fields
@@ -730,11 +766,18 @@ export class PortalClient {
         validationIssues.push(`Unknown field '${key}'.`);
         continue;
       }
-      if (field.hidden || isSensitiveName(field.name) || field.portalId && isSensitiveName(field.portalId)) {
+      if (isSensitiveField(field)) {
         continue;
       }
       if (!field.editable) {
         validationIssues.push(`Field '${field.name}' is not editable.`);
+        continue;
+      }
+      if (field.options?.length) {
+        const proposed = values[key];
+        if (proposed !== undefined && !field.options.some((option) => option.value === String(proposed))) {
+          validationIssues.push(`Field '${field.name}' does not allow the provided value.`);
+        }
       }
     }
     const draft: PreparedPortalAction["draft"] = {
@@ -749,8 +792,9 @@ export class PortalClient {
           hidden: field.hidden,
           editable: field.editable,
           currentValue: field.value,
-          proposedValue: proposed === undefined ? undefined : String(proposed)
-        });
+          proposedValue: proposed === undefined ? undefined : String(proposed),
+          options: field.options
+        }, field);
       })
     };
 
@@ -765,11 +809,30 @@ export class PortalClient {
     }) as PreparedPortalAction;
   }
 
-  async requestPortalActionCommit(actionId: string, values: Record<string, unknown> = {}): Promise<PortalActionCommitRequest> {
-    const action = await this.getPortalAction(actionId);
-    const validationIssues = this.commitScopeIssues(action);
-    const prepared = await this.preparePortalAction(actionId, values);
+  async requestPortalActionCommit(
+    actionId: string,
+    values: Record<string, unknown> = {},
+    target: PortalActionCommitTarget = {}
+  ): Promise<PortalActionCommitRequest> {
+    const resolved = await this.resolveCommitAction(actionId, target);
+    const validationIssues = [...resolved.validationIssues];
+    const action = resolved.action;
+    if (!action) {
+      return {
+        ok: false,
+        actionId,
+        actionTitle: undefined,
+        confirmationId: undefined,
+        summary: `Commit request for '${actionId}' was not created.`,
+        validationIssues,
+        diff: []
+      };
+    }
+
+    validationIssues.push(...this.commitScopeIssues(action));
+    const prepared = this.prepareResolvedPortalAction(action, values);
     validationIssues.push(...prepared.validationIssues.filter((issue) => !issue.startsWith("Missing required field ")));
+    validationIssues.push(...repairCommitValueIssues(action, prepared.draft.fields));
     const diff = prepared.draft.fields
       .filter((field) => field.proposedValue !== undefined && field.currentValue !== field.proposedValue)
       .map((field) => ({
@@ -802,6 +865,7 @@ export class PortalClient {
       actionTitle: action.title,
       recordId: action.recordId,
       recordTitle: action.recordTitle,
+      serviceId: action.serviceId,
       xuclass: action.xuclass,
       serviceUrl: action.serviceUrl,
       values: Object.fromEntries(diff.map((entry) => [entry.name, entry.proposedValue])),
@@ -831,19 +895,33 @@ export class PortalClient {
       await deleteConfirmation(confirmationId);
       throw new PortalError(`Confirmation '${confirmationId}' has expired.`, "CONFIRMATION_EXPIRED", 410);
     }
-    if (confirmation.actionId !== "save_partner" || confirmation.xuclass !== "ESQ_IA_PART") {
+
+    let resolved: { action?: PortalAction; validationIssues: string[] };
+    try {
+      resolved = await this.resolveCommitAction(confirmation.actionId, {
+        recordId: confirmation.recordId,
+        serviceId: confirmation.serviceId
+      });
+    } catch (error) {
       await deleteConfirmation(confirmationId);
-      throw new PortalError("Only Meine Daten/save_partner can be committed in this version.", "ACTION_COMMIT_NOT_ALLOWED", 403);
+      throw error;
+    }
+    const action = resolved.action;
+    const scopeIssues = [
+      ...resolved.validationIssues,
+      ...(action ? this.commitScopeIssues(action) : [])
+    ];
+    if (scopeIssues.length > 0) {
+      await deleteConfirmation(confirmationId);
+      throw new PortalError(scopeIssues.join(" "), "ACTION_COMMIT_NOT_ALLOWED", 403);
+    }
+    if (!action) {
+      await deleteConfirmation(confirmationId);
+      throw new PortalError(`Portal action '${confirmation.actionId}' was not found.`, "ACTION_COMMIT_NOT_ALLOWED", 403);
     }
 
     const config = await loadConfig();
     const session = await this.authenticatedSession(config);
-    const action = await this.getPortalAction(confirmation.actionId);
-    const scopeIssues = this.commitScopeIssues(action);
-    if (scopeIssues.length > 0) {
-      throw new PortalError(scopeIssues.join(" "), "ACTION_COMMIT_NOT_ALLOWED", 403);
-    }
-
     const sourceRecordId = action.recordId ?? confirmation.recordId ?? action.id;
     const sourceFormUrl = this.buildActionUrl(config, action.serviceUrl, sourceRecordId, "get");
     if (!sourceFormUrl) {
@@ -897,7 +975,7 @@ export class PortalClient {
       committedAt: new Date().toISOString(),
       status: response.status,
       summary: response.ok
-        ? `Committed Meine Daten action '${confirmation.actionTitle}'.`
+        ? `Committed ${commitSummaryLabel(action)} '${confirmation.actionTitle}'.`
         : `Portal returned HTTP ${response.status} for '${confirmation.actionTitle}'.`,
       portalMessage: portalMessage || undefined
     };
@@ -1080,11 +1158,11 @@ export class PortalClient {
   }
 
   private commitScopeIssues(action: PortalAction): string[] {
-    if (action.id !== "save_partner" || action.xuclass !== "ESQ_IA_PART") {
-      return ["Only Meine Daten/save_partner can be committed in this version."];
+    if (!isSupportedCommitAction(action)) {
+      return ["Only Meine Daten/save_partner and Reparatur/cmdsend damage reports can be committed in this version."];
     }
     if (!action.preparable || action.source !== "detail") {
-      return ["Only detail-based preparable Meine Daten actions can be committed."];
+      return ["Only detail-based preparable portal actions can be committed."];
     }
     return [];
   }
@@ -1262,6 +1340,7 @@ function dedupeActions(actions: PortalAction[]): PortalAction[] {
 function actionToWriteCapability(action: PortalAction): PortalWriteCapability {
   const domain = classifyWriteDomain(action);
   const spec = WRITE_DOMAIN_SPECS[domain];
+  const liveCommitSupported = isSupportedCommitAction(action);
   return {
     domain,
     title: action.title || spec.title,
@@ -1278,8 +1357,8 @@ function actionToWriteCapability(action: PortalAction): PortalWriteCapability {
     requiredFields: mergeRequiredFields(spec.requiredFields, action.fields.filter((field) => field.required && !field.hidden).map((field) => field.name)),
     targetRequired: spec.targetRequired,
     uploadSupported: false,
-    liveCommitSupported: false,
-    executionPolicy: "draft_only_no_live_write"
+    liveCommitSupported,
+    executionPolicy: liveCommitSupported ? "confirmation_required_live_commit" : "draft_only_no_live_write"
   };
 }
 
@@ -1370,9 +1449,10 @@ function sanitizePortalAction(action: PortalAction): PortalAction {
   return {
     ...action,
     fields: action.fields.map((field) => {
-      if (field.hidden || isSensitiveName(field.name)) {
-        const { value: _value, ...rest } = field;
+      if (isSensitiveField(field)) {
+        const { value: _value, options: _options, ...rest } = field;
         void _value;
+        void _options;
         return rest;
       }
       return field;
@@ -1381,14 +1461,22 @@ function sanitizePortalAction(action: PortalAction): PortalAction {
   };
 }
 
-function sanitizePreparedField(field: PreparedPortalAction["draft"]["fields"][number]): PreparedPortalAction["draft"]["fields"][number] {
-  if (field.hidden || isSensitiveName(field.name)) {
-    const { currentValue: _currentValue, proposedValue: _proposedValue, ...rest } = field;
+function sanitizePreparedField(
+  field: PreparedPortalAction["draft"]["fields"][number],
+  sourceField?: Pick<PortalActionField, "hidden" | "name" | "portalId">
+): PreparedPortalAction["draft"]["fields"][number] {
+  if (isSensitiveField(sourceField ?? field)) {
+    const { currentValue: _currentValue, proposedValue: _proposedValue, options: _options, ...rest } = field;
     void _currentValue;
     void _proposedValue;
+    void _options;
     return rest;
   }
   return field;
+}
+
+function isSensitiveField(field: Pick<PortalActionField, "hidden" | "name" | "portalId">): boolean {
+  return field.hidden || isSensitiveName(field.name) || Boolean(field.portalId && isSensitiveName(field.portalId));
 }
 
 function isSensitiveName(name: string): boolean {
@@ -1399,19 +1487,78 @@ function isChangedFlagField(field: PortalActionField): boolean {
   return field.name === "ESQ_CHANGED" || field.portalId === "ESQ_CHANGED";
 }
 
+function isSupportedCommitAction(action: PortalAction): boolean {
+  return isProfileCommitAction(action) || isRepairSubmitCommitAction(action);
+}
+
+function isProfileCommitAction(action: PortalAction): boolean {
+  return action.id === "save_partner" &&
+    action.xuclass === "ESQ_IA_PART" &&
+    action.source === "detail" &&
+    action.preparable;
+}
+
+function isRepairSubmitCommitAction(action: PortalAction): boolean {
+  const title = `${action.title} ${action.recordTitle ?? ""}`.toLowerCase();
+  return action.id === "cmdsend" &&
+    action.xuclass === "ESQ_TENA_DMG" &&
+    action.source === "detail" &&
+    action.actionKind === "form" &&
+    action.preparable &&
+    title.includes("schaden melden");
+}
+
+function commitSummaryLabel(action: PortalAction): string {
+  if (isProfileCommitAction(action)) {
+    return "profile action";
+  }
+  if (isRepairSubmitCommitAction(action)) {
+    return "repair action";
+  }
+  return "portal action";
+}
+
+function repairCommitValueIssues(
+  action: PortalAction,
+  fields: PreparedPortalAction["draft"]["fields"]
+): string[] {
+  if (!isRepairSubmitCommitAction(action)) {
+    return [];
+  }
+  const proposed = fields.filter((field) => field.proposedValue !== undefined && field.proposedValue !== "");
+  const hasDescription = proposed.some((field) =>
+    field.name === "msg_txt" ||
+      field.name === "description" ||
+      /beschreibung/i.test(field.label ?? "")
+  );
+  const hasDamageTopic = proposed.some((field) => field.name.startsWith("TOPIC_"));
+  const issues: string[] = [];
+  if (!hasDescription) {
+    issues.push("Repair reports require a proposed description field.");
+  }
+  if (!hasDamageTopic) {
+    issues.push("Repair reports require a proposed Schadensart/TOPIC field.");
+  }
+  return issues;
+}
+
 function replaceXmlFieldValue(xml: string, field: PortalActionField, value: string): string {
   const selectors = [field.portalId, field.name].filter((item): item is string => Boolean(item));
   for (const selector of selectors) {
-    const textPattern = new RegExp(`(<(?:textfield|numberfield|datefield)\\b(?=[^>]*(?:id|refname|name)="${escapeRegExp(selector)}")[^>]*>)([\\s\\S]*?)(<\\/(?:textfield|numberfield|datefield)>)`);
+    const textPattern = new RegExp(`(<(?:textfield|numberfield|datefield|textarea)\\b(?=[^>]*(?:id|refname|name)="${escapeRegExp(selector)}")[^>]*>)([\\s\\S]*?)(<\\/(?:textfield|numberfield|datefield|textarea)>)`);
     if (textPattern.test(xml)) {
       return xml.replace(textPattern, `$1${escapeXmlText(value)}$3`);
     }
     const choicePattern = new RegExp(`(<choicefield\\b(?=[^>]*(?:id|refname|name)="${escapeRegExp(selector)}")[^>]*>)([\\s\\S]*?)(<\\/choicefield>)`);
     const choiceMatch = choicePattern.exec(xml);
     if (choiceMatch) {
-      const nextChoices = (choiceMatch[2] ?? "")
+      const choices = choiceMatch[2] ?? "";
+      const nextChoices = choices
         .replace(/\sselected="true"/g, "")
-        .replace(new RegExp(`(<choice\\b(?=[^>]*(?:id|value)="${escapeRegExp(value)}")[^>]*)(\\/?>)`), "$1 selected=\"true\"$2");
+        .replace(new RegExp(`(<choice\\b(?=[^>]*(?:id|value)="${escapeRegExp(value)}")[^>]*?)(\\s*\\/?>)`), "$1 selected=\"true\"$2");
+      if (nextChoices === choices.replace(/\sselected="true"/g, "")) {
+        continue;
+      }
       return xml.replace(choicePattern, `$1${nextChoices}$3`);
     }
   }

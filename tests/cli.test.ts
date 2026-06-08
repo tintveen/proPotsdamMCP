@@ -412,28 +412,36 @@ describe("CLI", () => {
       id: "save_partner",
       title: "Speichern"
     });
+    const requestCalls: Array<{
+      actionId: string;
+      values?: Record<string, unknown>;
+      options?: { recordId?: string; serviceId?: string };
+    }> = [];
     const client = minimalClient({
       listPortalActions: async () => ({
         source: "boxlist",
         items: [action]
       }),
       getPortalAction: async () => action,
-      requestPortalActionCommit: async (actionId, values) => ({
-        ok: true,
-        actionId,
-        actionTitle: "Speichern",
-        confirmationId: "confirm-1",
-        expiresAt: "2026-05-15T00:10:00.000Z",
-        summary: "Ready.",
-        validationIssues: [],
-        diff: [
-          {
-            name: "phone_ref",
-            currentValue: "+491",
-            proposedValue: String(values?.phone_ref)
-          }
-        ]
-      }),
+      requestPortalActionCommit: async (actionId, values, options) => {
+        requestCalls.push({ actionId, values, options });
+        return {
+          ok: true,
+          actionId,
+          actionTitle: "Speichern",
+          confirmationId: "confirm-1",
+          expiresAt: "2026-05-15T00:10:00.000Z",
+          summary: "Ready.",
+          validationIssues: [],
+          diff: [
+            {
+              name: "phone_ref",
+              currentValue: "+491",
+              proposedValue: String(values?.phone_ref)
+            }
+          ]
+        };
+      },
       commitPortalAction: async (confirmationId) => ({
         ok: true,
         actionId: "save_partner",
@@ -447,7 +455,7 @@ describe("CLI", () => {
     const commit = createIo();
 
     await runCli(
-      ["node", "propotsdam-cli", "actions", "request-commit", "save_partner", "--value", "phone_ref=+492", "--json"],
+      ["node", "propotsdam-cli", "actions", "request-commit", "save_partner", "--record-id", "PROFILE-1", "--service-id", "PROFILE-SVC", "--value", "phone_ref=+492", "--json"],
       request.io,
       client
     );
@@ -455,6 +463,13 @@ describe("CLI", () => {
 
     expect(JSON.parse(request.stdout())).toMatchObject({ confirmationId: "confirm-1" });
     expect(JSON.parse(commit.stdout())).toMatchObject({ ok: true, recordId: "FINAL-1" });
+    expect(requestCalls).toEqual([
+      {
+        actionId: "save_partner",
+        values: { phone_ref: "+492" },
+        options: { recordId: "PROFILE-1", serviceId: "PROFILE-SVC" }
+      }
+    ]);
   });
 
   it("prints JSON errors in JSON mode with usage exit code 2", async () => {

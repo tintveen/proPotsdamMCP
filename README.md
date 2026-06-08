@@ -13,8 +13,17 @@ It runs on your Mac, talks MCP over stdio, stores your portal password in the ma
 Add it to Codex:
 
 ```bash
-codex mcp add propotsdam -- npx -y propotsdam-mcp serve
+codex mcp add proPotsdam -- npx -y propotsdam-mcp serve
 ```
+
+If you previously installed the MCP server as `propotsdam`, re-add it under the display-correct name:
+
+```bash
+codex mcp remove propotsdam
+codex mcp add proPotsdam -- npx -y propotsdam-mcp serve
+```
+
+Restart Codex afterward so the tool namespace refreshes.
 
 Store your portal credentials once:
 

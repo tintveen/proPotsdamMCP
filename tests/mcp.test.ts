@@ -5,12 +5,12 @@ describe("MCP server", () => {
   it("registers the data-only ProPotsdam tool surface", () => {
     const server = createServer();
     const inspected = server as unknown as {
-      _registeredTools: Record<string, { description?: string; inputSchema?: { safeParse: (value: unknown) => { success: boolean } } }>;
+      _registeredTools: Record<string, { title?: string; description?: string; inputSchema?: { safeParse: (value: unknown) => { success: boolean } } }>;
       server: { _serverInfo: { name: string } };
     };
     const tools = inspected._registeredTools;
 
-    expect(inspected.server._serverInfo.name).toBe("ProPotsdam MCP");
+    expect(inspected.server._serverInfo.name).toBe("proPotsdam MCP");
     expect(Object.keys(tools).sort()).toEqual([
       "propotsdam_auth_login",
       "propotsdam_auth_logout",
@@ -33,6 +33,11 @@ describe("MCP server", () => {
       "propotsdam_request_portal_action_commit",
       "propotsdam_list_portal_records"
     ].sort());
+    expect(tools.propotsdam_get_portal_record?.title).toBe("proPotsdam get portal record");
+    expect(Object.values(tools).map((tool) => tool.title)).toEqual(
+      expect.arrayContaining(["proPotsdam auth status", "proPotsdam list portal records"])
+    );
+    expect(Object.values(tools).every((tool) => tool.title?.startsWith("proPotsdam "))).toBe(true);
     expect(Object.keys(tools).join(" ")).not.toMatch(/submit|reply|acknowledge/i);
     expect(Object.values(tools).map((tool) => tool.description ?? "").join(" ")).not.toMatch(/submit|reply|acknowledge/i);
 
@@ -75,6 +80,7 @@ describe("MCP server", () => {
 
     const requestCommitTool = tools.propotsdam_request_portal_action_commit!;
     expect(requestCommitTool.inputSchema?.safeParse({ actionId: "save_partner", values: { phone_ref: "x" } }).success).toBe(true);
+    expect(requestCommitTool.inputSchema?.safeParse({ actionId: "cmdsend", recordId: "DMG-1", serviceId: "SRV-1", values: { msg_txt: "x" } }).success).toBe(true);
     expect(requestCommitTool.inputSchema?.safeParse({ actionId: "" }).success).toBe(false);
 
     const commitTool = tools.propotsdam_commit_portal_action!;

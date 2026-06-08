@@ -206,7 +206,11 @@ describe("portal action discovery", () => {
           portalId: "SO_#TITLE#_I_CP",
           value: "0002",
           required: true,
-          editable: true
+          editable: true,
+          options: [
+            { value: "0001", label: "Frau", selected: false },
+            { value: "0002", label: "Herr", selected: true }
+          ]
         }),
         expect.objectContaining({
           name: "ESQ_CHANGED",

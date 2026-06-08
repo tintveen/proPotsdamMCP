@@ -5,6 +5,7 @@ import type {
   InboxItem,
   PortalAction,
   PortalActionField,
+  PortalActionFieldOption,
   PortalFileItem,
   PortalRecordItem,
   PortalReadDomain,
@@ -471,7 +472,7 @@ function extractDetailFormActions(
 ): PortalAction[] {
   const actionObjects = collectNamedObjects(parsed, "action");
   const fields = dedupeBy(
-    ["field", "textfield", "choicefield", "checkboxfield", "hiddenfield"]
+    ["field", "textfield", "textarea", "choicefield", "checkboxfield", "hiddenfield"]
       .flatMap((key) => collectNamedObjects(parsed, key))
       .map(normalizeActionField)
       .filter((field): field is PortalActionField => field !== null),
@@ -567,7 +568,7 @@ function nonPreparableAction(
 }
 
 function extractActionFields(candidate: Record<string, unknown>): PortalActionField[] {
-  const fieldObjects = ["field", "textfield", "choicefield", "checkboxfield", "hiddenfield"]
+  const fieldObjects = ["field", "textfield", "textarea", "choicefield", "checkboxfield", "hiddenfield"]
     .flatMap((key) => collectNamedObjects(candidate, key));
   if (fieldObjects.length > 0) {
     return dedupeBy(
@@ -597,7 +598,8 @@ function normalizeActionField(candidate: Record<string, unknown>): PortalActionF
   const hidden = firstBoolean(scalars, ["hidden", "HIDDEN", "@hidden"]) ?? (type?.toLowerCase() === "hidden" || firstScalar(scalars, ["visibility", "@visibility"]) === "hidden");
   const disabled = firstBoolean(scalars, ["disabled", "DISABLED", "locked", "LOCKED", "readOnly", "readonly"]) ?? false;
   const editable = hidden ? false : (firstBoolean(scalars, ["editable", "EDITABLE", "enabled", "ENABLED", "@editable"]) ?? !disabled);
-  const value = firstScalar(scalars, ["value", "VALUE", "#text", "meta:saved_value", "@meta:saved_value"]) ?? selectedChoiceValue(candidate);
+  const options = choiceOptions(candidate);
+  const value = firstScalar(scalars, ["value", "VALUE", "#text", "meta:saved_value", "@meta:saved_value"]) ?? selectedChoiceValue(options);
   return {
     name,
     portalId,
@@ -606,18 +608,31 @@ function normalizeActionField(candidate: Record<string, unknown>): PortalActionF
     required,
     hidden,
     editable,
-    value
+    value,
+    ...(options.length > 0 ? { options } : {})
   };
 }
 
-function selectedChoiceValue(candidate: Record<string, unknown>): string | undefined {
+function choiceOptions(candidate: Record<string, unknown>): PortalActionFieldOption[] {
   const choices = collectNamedObjects(candidate, "choice");
-  const selected = choices.find((choice) => firstBoolean(flattenScalars(choice), ["selected", "@selected"]) === true);
-  if (!selected) {
-    return undefined;
+  const options: PortalActionFieldOption[] = [];
+  for (const choice of choices) {
+    const scalars = flattenScalars(choice);
+    const value = firstScalar(scalars, ["id", "@id", "value", "@value", "name", "@name", "#text", "title", "@title"]);
+    if (!value) {
+      continue;
+    }
+    options.push({
+      value,
+      label: firstScalar(scalars, ["title", "@title", "label", "@label", "text", "TEXT", "name", "@name"]),
+      selected: firstBoolean(scalars, ["selected", "@selected"]) === true
+    });
   }
-  const scalars = flattenScalars(selected);
-  return firstScalar(scalars, ["id", "@id", "value", "@value", "name", "@name", "#text", "title", "@title"]);
+  return dedupeBy(options, (option) => option.value);
+}
+
+function selectedChoiceValue(options: PortalActionFieldOption[]): string | undefined {
+  return options.find((option) => option.selected)?.value;
 }
 
 function looksWritableAction(value: string): boolean {

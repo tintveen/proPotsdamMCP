@@ -327,7 +327,10 @@ describe("PortalClient HTTP flow", () => {
       }
     });
     expect(JSON.stringify(prepared)).not.toContain("must-not-leak");
+    expect(JSON.stringify(action)).not.toContain("csrf-secret-option");
+    expect(JSON.stringify(prepared)).not.toContain("csrf-secret-option");
     expect(artifact).not.toContain("csrf-secret");
+    expect(artifact).not.toContain("csrf-secret-option");
     expect(artifact).not.toContain("sid=abc");
     expect(artifact).not.toContain("csrf-token");
     expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
@@ -495,7 +498,7 @@ describe("PortalClient HTTP flow", () => {
       actionId: "save_partner",
       recordId: "FINAL-PROFILE-1",
       status: 200,
-      summary: expect.stringContaining("Meine Daten")
+      summary: expect.stringContaining("profile action")
     });
     expect(savePosts).toHaveLength(1);
     expect(actionGets).toHaveLength(1);
@@ -511,6 +514,151 @@ describe("PortalClient HTTP flow", () => {
     });
   });
 
+  it("creates and commits a confirmation for detail-based repair reports", async () => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairDetailForm: true
+    });
+    const description = "An der Hintertür des Hauses lässt sich die Tür nicht mehr mit dem elektronischen Schalter öffnen. Der Elektromotor bzw. elektronische Türöffner scheint defekt. Bitte veranlassen Sie die Reparatur.";
+
+    const capabilities = await client.listPortalWriteCapabilities({ domain: "repair_report" });
+    expect(capabilities.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actionId: "cmdsend",
+        liveCommitSupported: true,
+        executionPolicy: "confirmation_required_live_commit"
+      })
+    ]));
+
+    const missingTopic = await client.requestPortalActionCommit("cmdsend", {
+      msg_txt: description
+    });
+    expect(missingTopic).toMatchObject({
+      ok: false,
+      confirmationId: undefined,
+      validationIssues: ["Repair reports require a proposed Schadensart/TOPIC field."]
+    });
+
+    const confirmation = await client.requestPortalActionCommit("cmdsend", {
+      msg_txt: description,
+      TOPIC_IB_DOOR_1: "TUEROEFFNER"
+    });
+
+    expect(confirmation).toMatchObject({
+      ok: true,
+      actionId: "cmdsend",
+      actionTitle: "Schaden melden",
+      expiresAt: expect.any(String),
+      validationIssues: [],
+      diff: expect.arrayContaining([
+        expect.objectContaining({ name: "msg_txt", proposedValue: description }),
+        expect.objectContaining({ name: "TOPIC_IB_DOOR_1", proposedValue: "TUEROEFFNER" })
+      ])
+    });
+    expect(confirmation.confirmationId).toMatch(/[0-9a-f-]{36}/);
+    expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
+
+    const result = await client.commitPortalAction(confirmation.confirmationId!);
+    const savePosts = requests.filter((request) => request.method === "POST" && request.url.includes("name=save"));
+    const actionGets = requests.filter((request) => request.method === "GET" && request.url.includes("name=cmdsend"));
+
+    expect(result).toMatchObject({
+      ok: true,
+      actionId: "cmdsend",
+      recordId: "FINAL-REPAIR-1",
+      status: 200,
+      summary: expect.stringContaining("repair action")
+    });
+    expect(savePosts).toHaveLength(1);
+    expect(actionGets).toHaveLength(1);
+    expect(savePosts[0]!.url).toContain("name=save");
+    expect(savePosts[0]!.url).toContain("resourceOrigin=form");
+    expect(actionGets[0]!.url).toContain("name=cmdsend");
+    expect(String(savePosts[0]!.body)).toContain("Hintertür");
+    expect(String(savePosts[0]!.body)).toContain("<choice id=\"TUEROEFFNER\" title=\"Türöffner\" selected=\"true\"/>");
+    expect(String(savePosts[0]!.body)).toContain("<textfield id=\"ESQ_CHANGED\"");
+    expect(String(savePosts[0]!.body)).toContain(">true</textfield>");
+    await expect(client.commitPortalAction(confirmation.confirmationId!)).rejects.toMatchObject({
+      code: "CONFIRMATION_NOT_FOUND"
+    });
+  });
+
+  it("requires a unique target for repeated detail-based repair commits", async () => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      dualRepairDetailForms: true
+    });
+    const values = {
+      msg_txt: "Der Türöffner im zweiten Aufgang reagiert nicht.",
+      TOPIC_IB_DOOR_1: "TUEROEFFNER"
+    };
+
+    const ambiguous = await client.requestPortalActionCommit("cmdsend", values);
+    expect(ambiguous).toMatchObject({
+      ok: false,
+      confirmationId: undefined,
+      validationIssues: [expect.stringContaining("ambiguous")]
+    });
+
+    const confirmation = await client.requestPortalActionCommit("cmdsend", values, {
+      recordId: "REPAIR-FORM-B"
+    });
+    expect(confirmation).toMatchObject({
+      ok: true,
+      actionId: "cmdsend",
+      validationIssues: [],
+      diff: expect.arrayContaining([
+        expect.objectContaining({ name: "msg_txt", proposedValue: values.msg_txt })
+      ])
+    });
+
+    const result = await client.commitPortalAction(confirmation.confirmationId!);
+    const savePost = requests.filter((request) => request.method === "POST" && request.url.includes("name=save")).at(-1)!;
+    const actionGet = requests.filter((request) => request.method === "GET" && request.url.includes("name=cmdsend")).at(-1)!;
+
+    expect(result).toMatchObject({
+      ok: true,
+      actionId: "cmdsend",
+      recordId: "FINAL-REPAIR-B"
+    });
+    expect(savePost.url).toContain("originalId=REPAIR-FORM-B");
+    expect(actionGet.url).toContain("originalId=REPAIR-FORM-B");
+  });
+
+  it("rejects stale confirmations when the stored target no longer resolves uniquely", async () => {
+    const { client } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      dualRepairDetailForms: true
+    });
+    const { loadConfirmation, saveConfirmation } = await import("../src/storage.js");
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+
+    await saveConfirmation({
+      confirmationId: "stale-cmdsend",
+      actionId: "cmdsend",
+      actionTitle: "Schaden melden",
+      xuclass: "ESQ_TENA_DMG",
+      serviceUrl: "/repair-service",
+      values: {
+        msg_txt: "Alte Bestätigung ohne eindeutiges Ziel.",
+        TOPIC_IB_DOOR_1: "TUEROEFFNER"
+      },
+      diff: [
+        {
+          name: "msg_txt",
+          proposedValue: "Alte Bestätigung ohne eindeutiges Ziel."
+        }
+      ],
+      createdAt: new Date().toISOString(),
+      expiresAt
+    });
+
+    await expect(client.commitPortalAction("stale-cmdsend")).rejects.toMatchObject({
+      code: "ACTION_COMMIT_NOT_ALLOWED"
+    });
+    await expect(loadConfirmation("stale-cmdsend")).resolves.toBeNull();
+  });
+
   it("does not create confirmations for locked fields, unknown fields, or blocked actions", async () => {
     const { client, requests } = await createMockClient({
       loggedServicesBody: servicesWithActions(),
@@ -523,7 +671,7 @@ describe("PortalClient HTTP flow", () => {
     expect(blocked).toMatchObject({
       ok: false,
       confirmationId: undefined,
-      validationIssues: ["Only Meine Daten/save_partner can be committed in this version."]
+      validationIssues: ["Only Meine Daten/save_partner and Reparatur/cmdsend damage reports can be committed in this version."]
     });
 
     const profileClient = (await createMockClient({
@@ -551,6 +699,8 @@ async function createMockClient(options: {
   apiServicesBody?: string;
   actionBoxlists?: boolean;
   readGapBoxlists?: boolean;
+  repairDetailForm?: boolean;
+  dualRepairDetailForms?: boolean;
 } = {}) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
   tempDirs.push(tempDir);
@@ -730,6 +880,70 @@ async function createMockClient(options: {
       });
     }
 
+    if ((options.repairDetailForm || options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=cmdsend")) {
+      const finalId = options.dualRepairDetailForms
+        ? (requestUrl.includes("originalId=REPAIR-FORM-B") ? "FINAL-REPAIR-B" : "FINAL-REPAIR-A")
+        : "FINAL-REPAIR-1";
+      return new Response(`oppc://openform?id=${finalId}`, {
+        status: 200,
+        headers: { "content-type": "text/plain" }
+      });
+    }
+
+    if ((options.repairDetailForm || options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=save")) {
+      return new Response("", {
+        status: 200,
+        headers: { "content-type": "text/html" }
+      });
+    }
+
+    if (options.dualRepairDetailForms && requestUrl.includes("/repair-service") && requestUrl.includes("name=boxlist")) {
+      return new Response(`
+        <boxlist>
+          <box>
+            <id>REPAIR-FORM-A</id>
+            <title>Schaden melden</title>
+          </box>
+          <box>
+            <id>REPAIR-FORM-B</id>
+            <title>Schaden melden</title>
+          </box>
+        </boxlist>
+      `, { status: 200, headers: { "content-type": "application/xml" } });
+    }
+
+    if (options.dualRepairDetailForms && requestUrl.includes("/repair-service") && requestUrl.includes("id=REPAIR-FORM-A")) {
+      return new Response(repairDetailForm("REPAIR-FORM-A"), {
+        status: 200,
+        headers: { "content-type": "application/xml" }
+      });
+    }
+
+    if (options.dualRepairDetailForms && requestUrl.includes("/repair-service") && requestUrl.includes("id=REPAIR-FORM-B")) {
+      return new Response(repairDetailForm("REPAIR-FORM-B"), {
+        status: 200,
+        headers: { "content-type": "application/xml" }
+      });
+    }
+
+    if (options.repairDetailForm && requestUrl.includes("/repair-service") && requestUrl.includes("name=boxlist")) {
+      return new Response(`
+        <boxlist>
+          <box>
+            <id>REPAIR-FORM</id>
+            <title>Schaden melden</title>
+          </box>
+        </boxlist>
+      `, { status: 200, headers: { "content-type": "application/xml" } });
+    }
+
+    if (options.repairDetailForm && requestUrl.includes("/repair-service") && requestUrl.includes("id=REPAIR-FORM")) {
+      return new Response(repairDetailForm(), {
+        status: 200,
+        headers: { "content-type": "application/xml" }
+      });
+    }
+
     if (requestUrl.includes("/profile-service") && requestUrl.includes("id=PROFILE-1")) {
       return new Response(profileDetailForm(), {
         status: 200,
@@ -768,6 +982,21 @@ function servicesWithProfileDetail(): string {
   `;
 }
 
+function servicesWithRepairDetail(): string {
+  return `
+    <asx:abap><asx:values><SERVICE>
+      <HEAD><LOGGED>X</LOGGED><USER_ID>MAX</USER_ID></HEAD>
+      <FOLDERS>
+        <SERVICE_NODE>
+          <title>Reparatur</title>
+          <SERVICE>/repair-service</SERVICE>
+          <XUCLASS>ESQ_TENA_DMG</XUCLASS>
+        </SERVICE_NODE>
+      </FOLDERS>
+    </SERVICE></asx:values></asx:abap>
+  `;
+}
+
 function profileDetailForm(): string {
   return `
     <form>
@@ -792,6 +1021,32 @@ function profileDetailForm(): string {
       </choicefield>
       <choicefield id="SO_#COUNTRY#_I_EQ" refname="adr5">
         <choice id="DE" selected="true" title="Deutschland"/>
+      </choicefield>
+      <textfield id="ESQ_CHANGED" visibility="hidden">false</textfield>
+    </form>
+  `;
+}
+
+function repairDetailForm(id = "REPAIR-FORM"): string {
+  return `
+    <form id="${id}">
+      <head><id>${id}</id></head>
+      <title>Schaden melden</title>
+      <action>
+        <id>cmdsend</id>
+        <name>cmdsend</name>
+        <text>Schaden melden</text>
+        <method>POST</method>
+      </action>
+      <textarea id="msg_txt" refname="msg_txt" required="true" title="Beschreibung*"></textarea>
+      <choicefield id="ROOMS_CHO_IB_1" refname="ROOMS_CHO_IB_1" required="true" title="Welcher Teil der Wohnung ist betroffen?*">
+        <choice id="Wohnung" title="Wohnung"/>
+        <choice id="Aufgang" selected="true" title="Aufgang"/>
+      </choicefield>
+      <choicefield id="TOPIC_IB_DOOR_1" refname="TOPIC_IB_DOOR_1" required="true" title="Schadensart*">
+        <choice id="TUEROEFFNER" title="Türöffner"/>
+        <choice id="TUER" title="Tür"/>
+        <choice id="SCHLOSS" title="Schloss"/>
       </choicefield>
       <textfield id="ESQ_CHANGED" visibility="hidden">false</textfield>
     </form>
@@ -970,6 +1225,10 @@ function actionForService(requestUrl: string): string | undefined {
             <name>csrfToken</name>
             <value>csrf-secret</value>
             <hidden>true</hidden>
+            <choice>
+              <value>csrf-secret-option</value>
+              <selected>true</selected>
+            </choice>
           </field>
         </box>
         <box>

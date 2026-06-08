@@ -84,7 +84,11 @@ export interface CliPortalClient {
     actionId?: string;
   }): Promise<PreparedPortalWrite>;
   preparePortalAction?(id: string, values?: Record<string, unknown>): Promise<PreparedPortalAction>;
-  requestPortalActionCommit?(actionId: string, values?: Record<string, unknown>): Promise<PortalActionCommitRequest>;
+  requestPortalActionCommit?(
+    actionId: string,
+    values?: Record<string, unknown>,
+    options?: { recordId?: string; serviceId?: string }
+  ): Promise<PortalActionCommitRequest>;
   commitPortalAction?(confirmationId: string): Promise<PortalCommitResult>;
 }
 
@@ -367,7 +371,7 @@ async function handleActions(parsed: ParsedArgs, io: CliIo, client: CliPortalCli
     await printValue(
       parsed,
       io,
-      await requireClientMethod(client.requestPortalActionCommit, "actions request-commit").call(client, id, values),
+      await requireClientMethod(client.requestPortalActionCommit, "actions request-commit").call(client, id, values, commitTarget(parsed)),
       "Action Commit Request"
     );
     return;
@@ -452,7 +456,7 @@ async function collectActionValues(parsed: ParsedArgs, io: CliIo, action: Portal
     if (!field.required || field.hidden || !field.editable || isSensitiveName(field.name) || values[field.name] !== undefined) {
       continue;
     }
-    const answer = await io.question(`${field.label ?? field.name}: `);
+    const answer = await io.question(`${fieldPrompt(field)}: `);
     if (answer !== "") {
       values[field.name] = answer;
     }
@@ -467,13 +471,24 @@ async function collectActionValues(parsed: ParsedArgs, io: CliIo, action: Portal
   if (optionalFields.length > 0 && TRUE_VALUES.has((await io.question("Review optional editable fields? [y/N]: ")).trim().toLowerCase())) {
     for (const field of optionalFields) {
       const current = field.value ? ` [${field.value}]` : "";
-      const answer = await io.question(`${field.label ?? field.name}${current}: `);
+      const answer = await io.question(`${fieldPrompt(field)}${current}: `);
       if (answer !== "") {
         values[field.name] = answer;
       }
     }
   }
   return values;
+}
+
+function fieldPrompt(field: PortalAction["fields"][number]): string {
+  const label = field.label ?? field.name;
+  if (!field.options?.length) {
+    return label;
+  }
+  const options = field.options
+    .map((option) => option.label && option.label !== option.value ? `${option.value}=${option.label}` : option.value)
+    .join(", ");
+  return `${label} (${options})`;
 }
 
 async function collectWriteValues(
@@ -662,6 +677,13 @@ function actionFilter(parsed: ParsedArgs): {
     actionKind: getFlag(parsed, "kind") as PortalActionKind | undefined,
     source: getFlag(parsed, "source") as PortalAction["source"] | undefined,
     recordId: getFlag(parsed, "record-id")
+  };
+}
+
+function commitTarget(parsed: ParsedArgs): { recordId?: string; serviceId?: string } {
+  return {
+    recordId: getFlag(parsed, "record-id"),
+    serviceId: getFlag(parsed, "service-id")
   };
 }
 
@@ -1019,7 +1041,7 @@ function actionsHelp(binary: string): string {
   ${binary} actions list [--kind <kind>] [--source <boxlist|detail>] [--record-id <id>] [--json]
   ${binary} actions show [id] [--json]
   ${binary} actions prepare [id] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
-  ${binary} actions request-commit [id] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
+  ${binary} actions request-commit [id] [--record-id <id>] [--service-id <id>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
   ${binary} actions commit <confirmation-id> [--json]
 
 Alias: ${binary} aktionen ...
