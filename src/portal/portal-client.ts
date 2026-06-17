@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   API5_SERVICES_PATH,
@@ -36,6 +36,7 @@ import type {
   PortalActionCommitRequest,
   PortalActionCommitTarget,
   PortalActionMap,
+  PreparedPortalAttachment,
   PortalCommitResult,
   PortalRecordItem,
   PortalReadDomain,
@@ -752,15 +753,25 @@ export class PortalClient {
     return this.prepareResolvedPortalAction(action, values);
   }
 
-  private prepareResolvedPortalAction(action: PortalAction, values: Record<string, unknown> = {}): PreparedPortalAction {
+  private async prepareResolvedPortalAction(action: PortalAction, values: Record<string, unknown> = {}): Promise<PreparedPortalAction> {
     if (!action.preparable) {
       throw new PortalError(`Portal action '${action.id}' is not preparable: ${action.notPreparableReason ?? "unknown"}.`, "ACTION_NOT_PREPARABLE");
     }
 
+    const { attachments, consumedKeys, issues: attachmentIssues } = await this.prepareAttachments(action, values);
     const validationIssues = action.fields
-      .filter((field) => field.required && !field.hidden && values[field.name] === undefined && field.value === undefined)
+      .filter((field) => field.required && !field.hidden && !field.upload && values[field.name] === undefined && field.value === undefined)
       .map((field) => `Missing required field '${field.name}'.`);
+    for (const field of action.fields.filter((field) => field.required && !field.hidden && field.upload)) {
+      if (!attachments.some((attachment) => attachment.fieldName === field.name) && field.value === undefined) {
+        validationIssues.push(`Missing required file field '${field.name}'.`);
+      }
+    }
+    validationIssues.push(...attachmentIssues);
     for (const key of Object.keys(values)) {
+      if (consumedKeys.has(key)) {
+        continue;
+      }
       const field = action.fields.find((item) => item.name === key || item.portalId === key);
       if (!field) {
         validationIssues.push(`Unknown field '${key}'.`);
@@ -788,14 +799,17 @@ export class PortalClient {
         return sanitizePreparedField({
           name: field.name,
           label: field.label,
+          type: field.type,
           required: field.required,
           hidden: field.hidden,
           editable: field.editable,
           currentValue: field.value,
-          proposedValue: proposed === undefined ? undefined : String(proposed),
-          options: field.options
+          proposedValue: field.upload || proposed === undefined ? undefined : String(proposed),
+          options: field.options,
+          upload: field.upload
         }, field);
-      })
+      }),
+      ...(attachments.length > 0 ? { attachments } : {})
     };
 
     return redactSecrets({
@@ -830,10 +844,10 @@ export class PortalClient {
     }
 
     validationIssues.push(...this.commitScopeIssues(action));
-    const prepared = this.prepareResolvedPortalAction(action, values);
+    const prepared = await this.prepareResolvedPortalAction(action, values);
     validationIssues.push(...prepared.validationIssues.filter((issue) => !issue.startsWith("Missing required field ")));
     validationIssues.push(...repairCommitValueIssues(action, prepared.draft.fields));
-    const diff = prepared.draft.fields
+    const fieldDiff = prepared.draft.fields
       .filter((field) => field.proposedValue !== undefined && field.currentValue !== field.proposedValue)
       .map((field) => ({
         name: field.name,
@@ -841,6 +855,14 @@ export class PortalClient {
         currentValue: field.currentValue,
         proposedValue: field.proposedValue!
       }));
+    const attachments = prepared.draft.attachments ?? [];
+    const attachmentDiff = attachments.map((attachment) => ({
+      name: attachment.fieldName,
+      label: attachment.fieldLabel,
+      currentValue: undefined,
+      proposedValue: `${attachment.filename} (${attachment.mimeType}, ${attachment.byteLength} bytes)`
+    }));
+    const diff = [...fieldDiff, ...attachmentDiff];
     if (diff.length === 0 && validationIssues.length === 0) {
       validationIssues.push("No editable field changes were provided.");
     }
@@ -868,8 +890,9 @@ export class PortalClient {
       serviceId: action.serviceId,
       xuclass: action.xuclass,
       serviceUrl: action.serviceUrl,
-      values: Object.fromEntries(diff.map((entry) => [entry.name, entry.proposedValue])),
+      values: Object.fromEntries(fieldDiff.map((entry) => [entry.name, entry.proposedValue])),
       diff,
+      ...(attachments.length > 0 ? { attachments } : {}),
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString()
     };
@@ -882,7 +905,8 @@ export class PortalClient {
       expiresAt: confirmation.expiresAt,
       summary: `Ready to commit '${action.title}' for ${action.recordTitle ?? action.serviceTitle}. Ask the user to confirm this exact diff before committing.`,
       validationIssues: [],
-      diff
+      diff,
+      ...(attachments.length > 0 ? { attachments } : {})
     };
   }
 
@@ -959,6 +983,28 @@ export class PortalClient {
       };
     }
 
+    const attachmentUploads = await this.uploadConfirmedAttachments(
+      config,
+      session,
+      confirmation.attachments ?? [],
+      newRecordId,
+      originalId
+    );
+    if (attachmentUploads.some((upload) => !upload.ok)) {
+      await saveSession(session.serialize());
+      await deleteConfirmation(confirmationId);
+      const failed = attachmentUploads.find((upload) => !upload.ok)!;
+      return {
+        ok: false,
+        actionId: confirmation.actionId,
+        recordId: newRecordId,
+        committedAt: new Date().toISOString(),
+        status: failed.status,
+        summary: `Portal returned HTTP ${failed.status} while uploading attachment '${failed.filename}'.`,
+        attachmentUploads
+      };
+    }
+
     const commitUrl = this.buildActionUrl(config, action.serviceUrl, newRecordId, action.id, { originalId });
     if (!commitUrl) {
       throw new PortalError("Portal action has no commit endpoint.", "ACTION_COMMIT_NOT_ALLOWED", 403);
@@ -977,7 +1023,8 @@ export class PortalClient {
       summary: response.ok
         ? `Committed ${commitSummaryLabel(action)} '${confirmation.actionTitle}'.`
         : `Portal returned HTTP ${response.status} for '${confirmation.actionTitle}'.`,
-      portalMessage: portalMessage || undefined
+      portalMessage: portalMessage || undefined,
+      ...(attachmentUploads.length > 0 ? { attachmentUploads } : {})
     };
   }
 
@@ -1157,6 +1204,61 @@ export class PortalClient {
     return inbox.items.map(inboxItemToPortalRecord);
   }
 
+  private async prepareAttachments(
+    action: PortalAction,
+    values: Record<string, unknown>
+  ): Promise<{ attachments: PreparedPortalAttachment[]; consumedKeys: Set<string>; issues: string[] }> {
+    const uploadFields = action.fields.filter((field) => Boolean(field.upload));
+    const consumedKeys = new Set<string>();
+    const issues: string[] = [];
+    const attachments: PreparedPortalAttachment[] = [];
+    const aliasKeys = ["attachmentFilePath", "filePath", "photoPath", "imagePath"];
+    const providedAliases = aliasKeys.filter((key) => values[key] !== undefined && values[key] !== "");
+
+    if (uploadFields.length === 0) {
+      for (const key of providedAliases) {
+        consumedKeys.add(key);
+      }
+      if (providedAliases.length > 0) {
+        issues.push(`Portal action '${action.id}' does not expose a supported upload field for attachments.`);
+      }
+      return { attachments, consumedKeys, issues };
+    }
+
+    if (providedAliases.length > 0 && uploadFields.length > 1) {
+      for (const key of providedAliases) {
+        consumedKeys.add(key);
+      }
+      issues.push("Attachment file path is ambiguous because the portal action exposes multiple upload fields. Use the specific upload field name instead.");
+    }
+
+    for (const field of uploadFields) {
+      const input = attachmentInputForField(values, field, uploadFields.length === 1 ? providedAliases : []);
+      if (!input) {
+        continue;
+      }
+      consumedKeys.add(input.key);
+      if (!field.editable) {
+        issues.push(`Field '${field.name}' is not editable.`);
+        continue;
+      }
+      if (!field.upload?.supported || !field.upload.endpoint) {
+        issues.push(`Upload field '${field.name}' does not expose a supported upload endpoint.`);
+        continue;
+      }
+      const prepared = await prepareLocalImageAttachment(String(input.value), field);
+      if (prepared.issue) {
+        issues.push(prepared.issue);
+        continue;
+      }
+      if (prepared.attachment) {
+        attachments.push(prepared.attachment);
+      }
+    }
+
+    return { attachments, consumedKeys, issues };
+  }
+
   private commitScopeIssues(action: PortalAction): string[] {
     if (!isSupportedCommitAction(action)) {
       return ["Only Meine Daten/save_partner and Reparatur/cmdsend damage reports can be committed in this version."];
@@ -1199,8 +1301,46 @@ export class PortalClient {
         .replace(/xmlns:oppc="[^"]*"/g, "")
         .replace(/<oppc:form/g, "<form")
         .replace(/<\/oppc:form/g, "</form")
-        .replace(/xmlns=""/g, "")
+      .replace(/xmlns=""/g, "")
     };
+  }
+
+  private async uploadConfirmedAttachments(
+    config: PortalConfig,
+    session: CookieSession,
+    attachments: PreparedPortalAttachment[],
+    recordId: string,
+    originalId: string
+  ): Promise<NonNullable<PortalCommitResult["attachmentUploads"]>> {
+    const results: NonNullable<PortalCommitResult["attachmentUploads"]> = [];
+    for (const attachment of attachments) {
+      if (!attachment.uploadEndpoint) {
+        results.push({
+          fieldName: attachment.fieldName,
+          filename: attachment.filename,
+          ok: false,
+          status: 0
+        });
+        continue;
+      }
+      const form = new FormData();
+      const bytes = await readFile(attachment.filePath);
+      form.set("file", new Blob([bytes], { type: attachment.mimeType }), attachment.filename);
+      form.set("fieldName", attachment.fieldName);
+      form.set("recordId", recordId);
+      form.set("originalId", originalId);
+      const response = await session.post(
+        this.buildUploadUrl(config, attachment.uploadEndpoint, recordId, originalId),
+        form
+      );
+      results.push({
+        fieldName: attachment.fieldName,
+        filename: attachment.filename,
+        ok: response.ok,
+        status: response.status
+      });
+    }
+    return results;
   }
 
   private async authenticatedSession(config: PortalConfig): Promise<CookieSession> {
@@ -1297,6 +1437,23 @@ export class PortalClient {
     }
     return url.toString();
   }
+
+  private buildUploadUrl(config: PortalConfig, endpoint: string, recordId: string, originalId: string): string {
+    const url = new URL(endpoint, config.baseUrl);
+    if (!url.searchParams.has("id")) {
+      url.searchParams.set("id", recordId);
+    }
+    if (!url.searchParams.has("originalId")) {
+      url.searchParams.set("originalId", originalId);
+    }
+    if (!url.searchParams.has("api")) {
+      url.searchParams.set("api", config.apiVersion);
+    }
+    if (!url.searchParams.has("head-oppc-version")) {
+      url.searchParams.set("head-oppc-version", config.appVersion || DEFAULT_APP_VERSION);
+    }
+    return url.toString();
+  }
 }
 
 export async function configureCredentials(options: {
@@ -1341,6 +1498,7 @@ function actionToWriteCapability(action: PortalAction): PortalWriteCapability {
   const domain = classifyWriteDomain(action);
   const spec = WRITE_DOMAIN_SPECS[domain];
   const liveCommitSupported = isSupportedCommitAction(action);
+  const uploadSupported = action.fields.some((field) => field.upload?.supported === true);
   return {
     domain,
     title: action.title || spec.title,
@@ -1356,7 +1514,7 @@ function actionToWriteCapability(action: PortalAction): PortalWriteCapability {
     recordTitle: action.recordTitle,
     requiredFields: mergeRequiredFields(spec.requiredFields, action.fields.filter((field) => field.required && !field.hidden).map((field) => field.name)),
     targetRequired: spec.targetRequired,
-    uploadSupported: false,
+    uploadSupported,
     liveCommitSupported,
     executionPolicy: liveCommitSupported ? "confirmation_required_live_commit" : "draft_only_no_live_write"
   };
@@ -1424,6 +1582,101 @@ function mergeRequiredFields(primary: string[], secondary: string[]): string[] {
 
 function stringifyValues(values: Record<string, unknown>): Record<string, string> {
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value === undefined ? "" : String(value)]));
+}
+
+function attachmentInputForField(
+  values: Record<string, unknown>,
+  field: PortalActionField,
+  aliasKeys: string[]
+): { key: string; value: unknown } | undefined {
+  for (const key of [field.name, field.portalId, ...aliasKeys].filter((item): item is string => Boolean(item))) {
+    const value = values[key];
+    if (value !== undefined && value !== "") {
+      return { key, value };
+    }
+  }
+  return undefined;
+}
+
+async function prepareLocalImageAttachment(
+  filePath: string,
+  field: PortalActionField
+): Promise<{ attachment?: PreparedPortalAttachment; issue?: string }> {
+  const resolvedPath = path.resolve(filePath);
+  let fileStat: Awaited<ReturnType<typeof stat>>;
+  try {
+    fileStat = await stat(resolvedPath);
+  } catch {
+    return { issue: `Attachment file '${filePath}' was not found or is not readable.` };
+  }
+  if (!fileStat.isFile()) {
+    return { issue: `Attachment path '${filePath}' is not a file.` };
+  }
+  if (field.upload?.maxBytes && fileStat.size > field.upload.maxBytes) {
+    return { issue: `Attachment file '${filePath}' exceeds the portal upload size limit.` };
+  }
+  const mimeType = await detectImageMimeType(resolvedPath);
+  if (!mimeType) {
+    return { issue: `Attachment file '${filePath}' must be a JPEG or PNG image.` };
+  }
+  if (!acceptsMimeType(field.upload?.acceptMimeTypes, mimeType, resolvedPath)) {
+    return { issue: `Upload field '${field.name}' does not accept ${mimeType} attachments.` };
+  }
+  return {
+    attachment: {
+      fieldName: field.name,
+      fieldLabel: field.label,
+      filePath: resolvedPath,
+      filename: path.basename(resolvedPath),
+      mimeType,
+      byteLength: fileStat.size,
+      uploadSupported: Boolean(field.upload?.supported && field.upload.endpoint),
+      uploadEndpoint: field.upload?.endpoint
+    }
+  };
+}
+
+async function detectImageMimeType(filePath: string): Promise<"image/jpeg" | "image/png" | undefined> {
+  const handle = await open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(12);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      return "image/jpeg";
+    }
+    if (
+      bytesRead >= 8 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47 &&
+      buffer[4] === 0x0d &&
+      buffer[5] === 0x0a &&
+      buffer[6] === 0x1a &&
+      buffer[7] === 0x0a
+    ) {
+      return "image/png";
+    }
+    return undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
+function acceptsMimeType(accepted: string[] | undefined, mimeType: "image/jpeg" | "image/png", filePath: string): boolean {
+  if (!accepted || accepted.length === 0) {
+    return true;
+  }
+  const extension = path.extname(filePath).toLowerCase();
+  return accepted.some((entry) => {
+    const normalized = entry.toLowerCase();
+    return normalized === mimeType ||
+      normalized === "image/*" ||
+      normalized === extension ||
+      normalized === ".jpeg" && mimeType === "image/jpeg" ||
+      normalized === ".jpg" && mimeType === "image/jpeg" ||
+      normalized === ".png" && mimeType === "image/png";
+  });
 }
 
 function inboxItemToPortalRecord(item: InboxItem): PortalRecordItem {

@@ -587,6 +587,10 @@ async function readValues(parsed: ParsedArgs): Promise<Record<string, unknown>> 
     }
     values[raw.slice(0, equalsIndex)] = raw.slice(equalsIndex + 1);
   }
+  const attachmentFilePath = getFlag(parsed, "attachment-file");
+  if (attachmentFilePath) {
+    values.attachmentFilePath = attachmentFilePath;
+  }
   return values;
 }
 
@@ -1040,8 +1044,8 @@ function actionsHelp(binary: string): string {
   ${binary} actions discover [--json]
   ${binary} actions list [--kind <kind>] [--source <boxlist|detail>] [--record-id <id>] [--json]
   ${binary} actions show [id] [--json]
-  ${binary} actions prepare [id] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
-  ${binary} actions request-commit [id] [--record-id <id>] [--service-id <id>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
+  ${binary} actions prepare [id] [--attachment-file <path>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
+  ${binary} actions request-commit [id] [--record-id <id>] [--service-id <id>] [--attachment-file <path>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
   ${binary} actions commit <confirmation-id> [--json]
 
 Alias: ${binary} aktionen ...
@@ -1051,7 +1055,7 @@ Alias: ${binary} aktionen ...
 function writesHelp(binary: string): string {
   return `Usage:
   ${binary} writes list [--domain <domain>] [--service-id <id>] [--xuclass <class>] [--json]
-  ${binary} writes prepare [domain] [--target-id <id>] [--action-id <id>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
+  ${binary} writes prepare [domain] [--target-id <id>] [--action-id <id>] [--attachment-file <path>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
 `;
 }
 

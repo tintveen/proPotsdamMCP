@@ -201,6 +201,15 @@ export interface PortalActionFieldOption {
   selected?: boolean;
 }
 
+export interface PortalActionUpload {
+  supported: boolean;
+  mode?: "multipart_form_data";
+  endpoint?: string;
+  acceptMimeTypes?: string[];
+  maxBytes?: number;
+  reason?: string;
+}
+
 export interface PortalActionField {
   name: string;
   portalId?: string;
@@ -211,6 +220,18 @@ export interface PortalActionField {
   editable: boolean;
   value?: string;
   options?: PortalActionFieldOption[];
+  upload?: PortalActionUpload;
+}
+
+export interface PreparedPortalAttachment {
+  fieldName: string;
+  fieldLabel?: string;
+  filePath: string;
+  filename: string;
+  mimeType: "image/jpeg" | "image/png";
+  byteLength: number;
+  uploadSupported: boolean;
+  uploadEndpoint?: string;
 }
 
 export interface PortalAction {
@@ -275,13 +296,16 @@ export interface PreparedPortalAction {
     fields: Array<{
       name: string;
       label?: string;
+      type?: string;
       required: boolean;
       hidden: boolean;
       editable: boolean;
       currentValue?: string;
       proposedValue?: string;
       options?: PortalActionFieldOption[];
+      upload?: PortalActionUpload;
     }>;
+    attachments?: PreparedPortalAttachment[];
   };
 }
 
@@ -299,6 +323,7 @@ export interface PortalActionCommitRequest {
     currentValue?: string;
     proposedValue: string;
   }>;
+  attachments?: PreparedPortalAttachment[];
 }
 
 export interface PortalActionCommitTarget {
@@ -379,6 +404,7 @@ export interface StoredPortalActionConfirmation {
   serviceUrl?: string;
   values: Record<string, string>;
   diff: PortalActionCommitRequest["diff"];
+  attachments?: PreparedPortalAttachment[];
   createdAt: string;
   expiresAt: string;
 }
@@ -391,4 +417,10 @@ export interface PortalCommitResult {
   status: number;
   summary: string;
   portalMessage?: string;
+  attachmentUploads?: Array<{
+    fieldName: string;
+    filename: string;
+    ok: boolean;
+    status: number;
+  }>;
 }

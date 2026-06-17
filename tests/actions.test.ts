@@ -220,4 +220,49 @@ describe("portal action discovery", () => {
       ])
     });
   });
+
+  it("extracts OPPC upload fields only as supported when an upload endpoint is exposed", async () => {
+    const { extractPortalActions } = await import("../src/portal/parsers.js");
+
+    const actions = extractPortalActions(`
+      <form id="REPAIR-FORM">
+        <title>Schaden melden</title>
+        <action>
+          <id>cmdsend</id>
+          <name>cmdsend</name>
+          <text>Schaden melden</text>
+          <method>POST</method>
+        </action>
+        <textarea id="msg_txt" refname="msg_txt" required="true" title="Beschreibung*"></textarea>
+        <filefield id="ATTACH_PHOTO" refname="damage_photo" title="Foto" uploadUrl="/repair-upload" accept="image/jpeg,image/png"/>
+        <uploadfield id="ATTACH_OTHER" refname="other_attachment" title="Weitere Anlage"/>
+      </form>
+    `, "application/xml", service, {
+      source: "detail",
+      recordId: "REPAIR-FORM",
+      recordTitle: "Schaden melden"
+    });
+
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "damage_photo",
+        portalId: "ATTACH_PHOTO",
+        type: "file",
+        upload: {
+          supported: true,
+          mode: "multipart_form_data",
+          endpoint: "/repair-upload",
+          acceptMimeTypes: ["image/jpeg", "image/png"]
+        }
+      }),
+      expect.objectContaining({
+        name: "other_attachment",
+        upload: expect.objectContaining({
+          supported: false,
+          reason: "Upload field does not expose an upload endpoint."
+        })
+      })
+    ]));
+  });
 });

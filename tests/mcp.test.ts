@@ -72,15 +72,16 @@ describe("MCP server", () => {
 
     const prepareWriteTool = tools.propotsdam_prepare_portal_write!;
     expect(prepareWriteTool.inputSchema?.safeParse({ domain: "password_change", values: { currentPassword: "x", newPassword: "y" } }).success).toBe(true);
+    expect(prepareWriteTool.inputSchema?.safeParse({ domain: "repair_report", attachmentFilePath: "/tmp/photo.jpg" }).success).toBe(true);
     expect(prepareWriteTool.inputSchema?.safeParse({ domain: "" }).success).toBe(false);
 
     const prepareTool = tools.propotsdam_prepare_portal_action!;
-    expect(prepareTool.inputSchema?.safeParse({ id: "A-1", values: { description: "x" } }).success).toBe(true);
+    expect(prepareTool.inputSchema?.safeParse({ id: "A-1", values: { description: "x" }, attachmentFilePath: "/tmp/photo.jpg" }).success).toBe(true);
     expect(prepareTool.inputSchema?.safeParse({ id: "" }).success).toBe(false);
 
     const requestCommitTool = tools.propotsdam_request_portal_action_commit!;
     expect(requestCommitTool.inputSchema?.safeParse({ actionId: "save_partner", values: { phone_ref: "x" } }).success).toBe(true);
-    expect(requestCommitTool.inputSchema?.safeParse({ actionId: "cmdsend", recordId: "DMG-1", serviceId: "SRV-1", values: { msg_txt: "x" } }).success).toBe(true);
+    expect(requestCommitTool.inputSchema?.safeParse({ actionId: "cmdsend", recordId: "DMG-1", serviceId: "SRV-1", values: { msg_txt: "x" }, attachmentFilePath: "/tmp/photo.jpg" }).success).toBe(true);
     expect(requestCommitTool.inputSchema?.safeParse({ actionId: "" }).success).toBe(false);
 
     const commitTool = tools.propotsdam_commit_portal_action!;

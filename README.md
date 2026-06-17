@@ -56,6 +56,7 @@ npx -y propotsdam-cli records raw get REC-1 --json
 npx -y propotsdam-cli files export REC-1 --output-dir /tmp/propotsdam-exports
 npx -y propotsdam-cli actions list --kind form
 npx -y propotsdam-cli actions prepare DMG-NEW --value description="Heizung bleibt kalt"
+npx -y propotsdam-cli actions request-commit cmdsend --attachment-file ./schaden.jpg --value msg_txt="Deckel defekt" --value TOPIC_IW_...="Abfallbehälter"
 npx -y propotsdam-cli actions request-commit save_partner --value phone_ref="+491234567"
 npx -y propotsdam-cli actions commit <confirmation-id>
 npx -y propotsdam-cli writes list --domain repair_report
@@ -63,7 +64,7 @@ npx -y propotsdam-cli writes list --domain repair_report
 
 Human output uses compact tables for lists and readable detail sections for single records. Add `--json` to get redacted machine-readable output using the underlying client result shape, for example `{ "items": [...], "source": "boxlist" }`.
 
-TTY sessions can guide missing ids and write fields with prompts. Non-interactive runs never prompt; pass ids and values explicitly with `--value key=value`, `--values-json '{"key":"value"}'`, or `--values-file values.json`.
+TTY sessions can guide missing ids and write fields with prompts. Non-interactive runs never prompt; pass ids and values explicitly with `--value key=value`, `--values-json '{"key":"value"}'`, or `--values-file values.json`. For repair photos, pass a local JPEG/PNG path with `--attachment-file <path>`; the client only commits it when the portal form exposes a supported upload endpoint, otherwise the commit request is rejected before any portal write.
 
 German aliases are available for common groups:
 

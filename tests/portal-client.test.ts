@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -525,6 +525,7 @@ describe("PortalClient HTTP flow", () => {
     expect(capabilities.items).toEqual(expect.arrayContaining([
       expect.objectContaining({
         actionId: "cmdsend",
+        uploadSupported: false,
         liveCommitSupported: true,
         executionPolicy: "confirmation_required_live_commit"
       })
@@ -537,6 +538,17 @@ describe("PortalClient HTTP flow", () => {
       ok: false,
       confirmationId: undefined,
       validationIssues: ["Repair reports require a proposed Schadensart/TOPIC field."]
+    });
+
+    const unsupportedAttachment = await client.requestPortalActionCommit("cmdsend", {
+      msg_txt: description,
+      TOPIC_IB_DOOR_1: "TUEROEFFNER",
+      attachmentFilePath: "/tmp/damage.jpg"
+    });
+    expect(unsupportedAttachment).toMatchObject({
+      ok: false,
+      confirmationId: undefined,
+      validationIssues: ["Portal action 'cmdsend' does not expose a supported upload field for attachments."]
     });
 
     const confirmation = await client.requestPortalActionCommit("cmdsend", {
@@ -581,6 +593,88 @@ describe("PortalClient HTTP flow", () => {
     await expect(client.commitPortalAction(confirmation.confirmationId!)).rejects.toMatchObject({
       code: "CONFIRMATION_NOT_FOUND"
     });
+  });
+
+  it("creates and commits repair reports with a supported image upload field", async () => {
+    const { client, requests, tempDir } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairUploadDetailForm: true
+    });
+    const photoPath = path.join(tempDir, "damage.jpg");
+    await writeFile(photoPath, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]));
+
+    const capabilities = await client.listPortalWriteCapabilities({ domain: "repair_report" });
+    expect(capabilities.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actionId: "cmdsend",
+        uploadSupported: true,
+        liveCommitSupported: true
+      })
+    ]));
+
+    const textPath = path.join(tempDir, "damage.txt");
+    await writeFile(textPath, "not an image", "utf8");
+    const invalidAttachment = await client.requestPortalActionCommit("cmdsend", {
+      msg_txt: "Der Deckel ist defekt.",
+      TOPIC_IB_DOOR_1: "TUEROEFFNER",
+      attachmentFilePath: textPath
+    });
+    expect(invalidAttachment).toMatchObject({
+      ok: false,
+      confirmationId: undefined,
+      validationIssues: [expect.stringContaining("must be a JPEG or PNG image")]
+    });
+
+    const confirmation = await client.requestPortalActionCommit("cmdsend", {
+      msg_txt: "Der Deckel der Bio-Muelltonne ist an einer Seite aus der Aufhaengung gebrochen.",
+      TOPIC_IB_DOOR_1: "TUEROEFFNER",
+      attachmentFilePath: photoPath
+    });
+
+    expect(confirmation).toMatchObject({
+      ok: true,
+      actionId: "cmdsend",
+      validationIssues: [],
+      diff: expect.arrayContaining([
+        expect.objectContaining({
+          name: "damage_photo",
+          proposedValue: expect.stringContaining("damage.jpg (image/jpeg")
+        })
+      ]),
+      attachments: [
+        expect.objectContaining({
+          fieldName: "damage_photo",
+          filename: "damage.jpg",
+          mimeType: "image/jpeg",
+          uploadSupported: true,
+          uploadEndpoint: "/repair-upload"
+        })
+      ]
+    });
+    expect(JSON.stringify(confirmation)).not.toContain("JFIF");
+    expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
+
+    const result = await client.commitPortalAction(confirmation.confirmationId!);
+    const uploadPosts = requests.filter((request) => request.method === "POST" && request.url.includes("/repair-upload"));
+    const actionGets = requests.filter((request) => request.method === "GET" && request.url.includes("name=cmdsend"));
+
+    expect(result).toMatchObject({
+      ok: true,
+      actionId: "cmdsend",
+      attachmentUploads: [
+        {
+          fieldName: "damage_photo",
+          filename: "damage.jpg",
+          ok: true,
+          status: 200
+        }
+      ]
+    });
+    expect(uploadPosts).toHaveLength(1);
+    expect(uploadPosts[0]!.url).toContain("id=");
+    expect(uploadPosts[0]!.url).toContain("originalId=REPAIR-FORM");
+    expect(uploadPosts[0]!.body).toBeInstanceOf(FormData);
+    expect(actionGets).toHaveLength(1);
   });
 
   it("requires a unique target for repeated detail-based repair commits", async () => {
@@ -700,6 +794,7 @@ async function createMockClient(options: {
   actionBoxlists?: boolean;
   readGapBoxlists?: boolean;
   repairDetailForm?: boolean;
+  repairUploadDetailForm?: boolean;
   dualRepairDetailForms?: boolean;
 } = {}) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
@@ -880,7 +975,7 @@ async function createMockClient(options: {
       });
     }
 
-    if ((options.repairDetailForm || options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=cmdsend")) {
+    if ((options.repairDetailForm || options.repairUploadDetailForm || options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=cmdsend")) {
       const finalId = options.dualRepairDetailForms
         ? (requestUrl.includes("originalId=REPAIR-FORM-B") ? "FINAL-REPAIR-B" : "FINAL-REPAIR-A")
         : "FINAL-REPAIR-1";
@@ -890,7 +985,14 @@ async function createMockClient(options: {
       });
     }
 
-    if ((options.repairDetailForm || options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=save")) {
+    if ((options.repairDetailForm || options.repairUploadDetailForm || options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=save")) {
+      return new Response("", {
+        status: 200,
+        headers: { "content-type": "text/html" }
+      });
+    }
+
+    if (options.repairUploadDetailForm && requestUrl.includes("/repair-upload")) {
       return new Response("", {
         status: 200,
         headers: { "content-type": "text/html" }
@@ -926,7 +1028,7 @@ async function createMockClient(options: {
       });
     }
 
-    if (options.repairDetailForm && requestUrl.includes("/repair-service") && requestUrl.includes("name=boxlist")) {
+    if ((options.repairDetailForm || options.repairUploadDetailForm) && requestUrl.includes("/repair-service") && requestUrl.includes("name=boxlist")) {
       return new Response(`
         <boxlist>
           <box>
@@ -937,8 +1039,8 @@ async function createMockClient(options: {
       `, { status: 200, headers: { "content-type": "application/xml" } });
     }
 
-    if (options.repairDetailForm && requestUrl.includes("/repair-service") && requestUrl.includes("id=REPAIR-FORM")) {
-      return new Response(repairDetailForm(), {
+    if ((options.repairDetailForm || options.repairUploadDetailForm) && requestUrl.includes("/repair-service") && requestUrl.includes("id=REPAIR-FORM")) {
+      return new Response(repairDetailForm("REPAIR-FORM", { upload: options.repairUploadDetailForm }), {
         status: 200,
         headers: { "content-type": "application/xml" }
       });
@@ -1027,7 +1129,7 @@ function profileDetailForm(): string {
   `;
 }
 
-function repairDetailForm(id = "REPAIR-FORM"): string {
+function repairDetailForm(id = "REPAIR-FORM", options: { upload?: boolean } = {}): string {
   return `
     <form id="${id}">
       <head><id>${id}</id></head>
@@ -1048,6 +1150,7 @@ function repairDetailForm(id = "REPAIR-FORM"): string {
         <choice id="TUER" title="Tür"/>
         <choice id="SCHLOSS" title="Schloss"/>
       </choicefield>
+      ${options.upload ? '<filefield id="ATTACH_PHOTO" refname="damage_photo" title="Foto" uploadUrl="/repair-upload" accept="image/jpeg,image/png"/>' : ""}
       <textfield id="ESQ_CHANGED" visibility="hidden">false</textfield>
     </form>
   `;

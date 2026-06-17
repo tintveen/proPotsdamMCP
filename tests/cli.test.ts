@@ -357,6 +357,8 @@ describe("CLI", () => {
         "{\"description\":\"old\",\"csrfToken\":\"secret-token\"}",
         "--value",
         "description=new",
+        "--attachment-file",
+        "/tmp/photo.jpg",
         "--json"
       ],
       harness.io,
@@ -400,7 +402,7 @@ describe("CLI", () => {
       })
     );
 
-    expect(calls).toEqual([{ description: "new", csrfToken: "secret-token" }]);
+    expect(calls).toEqual([{ description: "new", csrfToken: "secret-token", attachmentFilePath: "/tmp/photo.jpg" }]);
     expect(harness.stdout()).toContain("\"proposedValue\": \"new\"");
     expect(harness.stdout()).not.toContain("secret-token");
     expect(harness.stdout()).toContain("[REDACTED]");

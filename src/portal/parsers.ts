@@ -471,10 +471,11 @@ function extractDetailFormActions(
   context: { source?: PortalAction["source"]; recordId?: string; recordTitle?: string }
 ): PortalAction[] {
   const actionObjects = collectNamedObjects(parsed, "action");
+  const fieldTags = ["field", "textfield", "textarea", "choicefield", "checkboxfield", "hiddenfield", "filefield", "uploadfield", "attachmentfield"];
   const fields = dedupeBy(
-    ["field", "textfield", "textarea", "choicefield", "checkboxfield", "hiddenfield"]
-      .flatMap((key) => collectNamedObjects(parsed, key))
-      .map(normalizeActionField)
+    fieldTags
+      .flatMap((key) => collectNamedObjects(parsed, key).map((field) => ({ field, key })))
+      .map(({ field, key }) => normalizeActionField(field, key))
       .filter((field): field is PortalActionField => field !== null),
     (field) => field.name
   );
@@ -568,24 +569,25 @@ function nonPreparableAction(
 }
 
 function extractActionFields(candidate: Record<string, unknown>): PortalActionField[] {
-  const fieldObjects = ["field", "textfield", "textarea", "choicefield", "checkboxfield", "hiddenfield"]
-    .flatMap((key) => collectNamedObjects(candidate, key));
+  const fieldTags = ["field", "textfield", "textarea", "choicefield", "checkboxfield", "hiddenfield", "filefield", "uploadfield", "attachmentfield"];
+  const fieldObjects = fieldTags
+    .flatMap((key) => collectNamedObjects(candidate, key).map((field) => ({ field, key })));
   if (fieldObjects.length > 0) {
     return dedupeBy(
-      fieldObjects.map(normalizeActionField).filter((field): field is PortalActionField => field !== null),
+      fieldObjects.map(({ field, key }) => normalizeActionField(field, key)).filter((field): field is PortalActionField => field !== null),
       (field) => field.name
     );
   }
   return dedupeBy(
     collectObjects(candidate)
       .filter((objectValue) => objectValue !== candidate)
-      .map(normalizeActionField)
+      .map((field) => normalizeActionField(field))
       .filter((field): field is PortalActionField => field !== null),
     (field) => field.name
   );
 }
 
-function normalizeActionField(candidate: Record<string, unknown>): PortalActionField | null {
+function normalizeActionField(candidate: Record<string, unknown>, tagName?: string): PortalActionField | null {
   const scalars = flattenScalars(candidate);
   const portalId = firstScalar(scalars, ["id", "ID", "@id"]);
   const name = firstScalar(scalars, ["refname", "@refname", "name", "NAME", "field", "FIELD", "@name"]) ?? portalId;
@@ -593,13 +595,15 @@ function normalizeActionField(candidate: Record<string, unknown>): PortalActionF
     return null;
   }
   const label = firstScalar(scalars, ["label", "LABEL", "title", "@title", "TEXT"]);
-  const type = firstScalar(scalars, ["type", "TYPE", "inputType"]);
+  const tagType = uploadFieldTagType(tagName);
+  const type = firstScalar(scalars, ["type", "TYPE", "inputType"]) ?? tagType;
   const required = firstBoolean(scalars, ["required", "REQUIRED", "mandatory", "MANDATORY", "@required"]) ?? false;
   const hidden = firstBoolean(scalars, ["hidden", "HIDDEN", "@hidden"]) ?? (type?.toLowerCase() === "hidden" || firstScalar(scalars, ["visibility", "@visibility"]) === "hidden");
   const disabled = firstBoolean(scalars, ["disabled", "DISABLED", "locked", "LOCKED", "readOnly", "readonly"]) ?? false;
   const editable = hidden ? false : (firstBoolean(scalars, ["editable", "EDITABLE", "enabled", "ENABLED", "@editable"]) ?? !disabled);
   const options = choiceOptions(candidate);
   const value = firstScalar(scalars, ["value", "VALUE", "#text", "meta:saved_value", "@meta:saved_value"]) ?? selectedChoiceValue(options);
+  const upload = uploadMetadata(scalars, type);
   return {
     name,
     portalId,
@@ -609,8 +613,70 @@ function normalizeActionField(candidate: Record<string, unknown>): PortalActionF
     hidden,
     editable,
     value,
-    ...(options.length > 0 ? { options } : {})
+    ...(options.length > 0 ? { options } : {}),
+    ...(upload ? { upload } : {})
   };
+}
+
+function uploadFieldTagType(tagName?: string): string | undefined {
+  if (!tagName) {
+    return undefined;
+  }
+  return /^(?:file|upload|attachment)field$/i.test(tagName) ? "file" : undefined;
+}
+
+function uploadMetadata(scalars: Record<string, string>, type?: string): PortalActionField["upload"] | undefined {
+  const haystack = Object.entries(scalars).map(([key, value]) => `${key}=${value}`).join(" ").toLowerCase();
+  const looksLikeUpload = /(?:^|[^a-z])(?:file|upload|attachment|anlage|anhang|foto|photo|bild)(?:[^a-z]|$)/i.test(`${type ?? ""} ${haystack}`);
+  if (!looksLikeUpload) {
+    return undefined;
+  }
+  const endpoint = firstScalar(scalars, [
+    "uploadUrl",
+    "@uploadUrl",
+    "uploadEndpoint",
+    "@uploadEndpoint",
+    "endpoint",
+    "@endpoint",
+    "SERVICE",
+    "url",
+    "@url",
+    "href",
+    "@href"
+  ]);
+  const acceptMimeTypes = splitMimeList(firstScalar(scalars, ["accept", "@accept", "mimeType", "@mimeType", "mediaType", "@mediaType"]));
+  const maxBytes = parsePositiveInteger(firstScalar(scalars, ["maxBytes", "@maxBytes", "maxSize", "@maxSize", "sizeLimit", "@sizeLimit"]));
+  if (!endpoint) {
+    return {
+      supported: false,
+      acceptMimeTypes,
+      maxBytes,
+      reason: "Upload field does not expose an upload endpoint."
+    };
+  }
+  return {
+    supported: true,
+    mode: "multipart_form_data",
+    endpoint,
+    acceptMimeTypes,
+    maxBytes
+  };
+}
+
+function splitMimeList(value?: string): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const items = value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+  return items.length > 0 ? items : undefined;
+}
+
+function parsePositiveInteger(value?: string): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function choiceOptions(candidate: Record<string, unknown>): PortalActionFieldOption[] {

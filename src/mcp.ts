@@ -167,17 +167,24 @@ export function createServer(client = new PortalClient()): McpServer {
       domain: z.enum(WRITE_DOMAIN_VALUES),
       targetId: z.string().min(1).optional(),
       actionId: z.string().min(1).optional(),
+      attachmentFilePath: z.string().min(1).optional(),
       values: z.record(z.string(), z.unknown()).optional()
     }
-  }), async (input) => wrapTool(() => client.preparePortalWrite(input)));
+  }), async (input) => wrapTool(() => client.preparePortalWrite({
+    ...input,
+    values: mergeAttachmentFilePath(input.values, input.attachmentFilePath)
+  })));
 
   server.registerTool("propotsdam_prepare_portal_action", withToolTitle("propotsdam_prepare_portal_action", {
     description: "Create a review-only local draft for a ProPotsdam portal action without sending it.",
     inputSchema: {
       id: z.string().min(1),
+      attachmentFilePath: z.string().min(1).optional(),
       values: z.record(z.string(), z.unknown()).optional()
     }
-  }), async ({ id, values }) => wrapTool(() => client.preparePortalAction(id, values ?? {})));
+  }), async ({ id, values, attachmentFilePath }) => wrapTool(() =>
+    client.preparePortalAction(id, mergeAttachmentFilePath(values, attachmentFilePath))
+  ));
 
   server.registerTool("propotsdam_request_portal_action_commit", withToolTitle("propotsdam_request_portal_action_commit", {
     description: "Create a short-lived confirmation for committing a supported ProPotsdam portal action.",
@@ -185,10 +192,11 @@ export function createServer(client = new PortalClient()): McpServer {
       actionId: z.string().min(1),
       recordId: z.string().min(1).optional(),
       serviceId: z.string().min(1).optional(),
+      attachmentFilePath: z.string().min(1).optional(),
       values: z.record(z.string(), z.unknown()).optional()
     }
-  }), async ({ actionId, recordId, serviceId, values }) => wrapTool(() =>
-    client.requestPortalActionCommit(actionId, values ?? {}, { recordId, serviceId })
+  }), async ({ actionId, recordId, serviceId, values, attachmentFilePath }) => wrapTool(() =>
+    client.requestPortalActionCommit(actionId, mergeAttachmentFilePath(values, attachmentFilePath), { recordId, serviceId })
   ));
 
   server.registerTool("propotsdam_commit_portal_action", withToolTitle("propotsdam_commit_portal_action", {
@@ -199,6 +207,10 @@ export function createServer(client = new PortalClient()): McpServer {
   }), async ({ confirmationId }) => wrapTool(() => client.commitPortalAction(confirmationId)));
 
   return server;
+}
+
+function mergeAttachmentFilePath(values: Record<string, unknown> | undefined, attachmentFilePath: string | undefined): Record<string, unknown> {
+  return attachmentFilePath ? { ...(values ?? {}), attachmentFilePath } : values ?? {};
 }
 
 function registerJsonTool<T>(
