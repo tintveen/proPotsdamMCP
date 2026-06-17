@@ -17,6 +17,19 @@ import type {
 import { collectObjects, firstScalar, flattenScalars, parseXml } from "./xml.js";
 
 const DATE_PATTERN = /\b\d{1,2}\.\d{1,2}\.\d{2,4}\b/;
+const ACTION_FIELD_TAGS = [
+  "field",
+  "textfield",
+  "textarea",
+  "numberfield",
+  "datefield",
+  "choicefield",
+  "checkboxfield",
+  "hiddenfield",
+  "filefield",
+  "uploadfield",
+  "attachmentfield"
+];
 
 export function parseBody(text: string, contentType?: string): unknown {
   const trimmed = text.trim();
@@ -471,9 +484,8 @@ function extractDetailFormActions(
   context: { source?: PortalAction["source"]; recordId?: string; recordTitle?: string }
 ): PortalAction[] {
   const actionObjects = collectNamedObjects(parsed, "action");
-  const fieldTags = ["field", "textfield", "textarea", "choicefield", "checkboxfield", "hiddenfield", "filefield", "uploadfield", "attachmentfield"];
   const fields = dedupeBy(
-    fieldTags
+    ACTION_FIELD_TAGS
       .flatMap((key) => collectNamedObjects(parsed, key).map((field) => ({ field, key })))
       .map(({ field, key }) => normalizeActionField(field, key))
       .filter((field): field is PortalActionField => field !== null),
@@ -569,8 +581,7 @@ function nonPreparableAction(
 }
 
 function extractActionFields(candidate: Record<string, unknown>): PortalActionField[] {
-  const fieldTags = ["field", "textfield", "textarea", "choicefield", "checkboxfield", "hiddenfield", "filefield", "uploadfield", "attachmentfield"];
-  const fieldObjects = fieldTags
+  const fieldObjects = ACTION_FIELD_TAGS
     .flatMap((key) => collectNamedObjects(candidate, key).map((field) => ({ field, key })));
   if (fieldObjects.length > 0) {
     return dedupeBy(
@@ -595,7 +606,7 @@ function normalizeActionField(candidate: Record<string, unknown>, tagName?: stri
     return null;
   }
   const label = firstScalar(scalars, ["label", "LABEL", "title", "@title", "TEXT"]);
-  const tagType = uploadFieldTagType(tagName);
+  const tagType = actionFieldTagType(tagName);
   const type = firstScalar(scalars, ["type", "TYPE", "inputType"]) ?? tagType;
   const required = firstBoolean(scalars, ["required", "REQUIRED", "mandatory", "MANDATORY", "@required"]) ?? false;
   const hidden = firstBoolean(scalars, ["hidden", "HIDDEN", "@hidden"]) ?? (type?.toLowerCase() === "hidden" || firstScalar(scalars, ["visibility", "@visibility"]) === "hidden");
@@ -618,11 +629,20 @@ function normalizeActionField(candidate: Record<string, unknown>, tagName?: stri
   };
 }
 
-function uploadFieldTagType(tagName?: string): string | undefined {
+function actionFieldTagType(tagName?: string): string | undefined {
   if (!tagName) {
     return undefined;
   }
-  return /^(?:file|upload|attachment)field$/i.test(tagName) ? "file" : undefined;
+  if (/^(?:file|upload|attachment)field$/i.test(tagName)) {
+    return "file";
+  }
+  if (/^numberfield$/i.test(tagName)) {
+    return "number";
+  }
+  if (/^datefield$/i.test(tagName)) {
+    return "date";
+  }
+  return undefined;
 }
 
 function uploadMetadata(scalars: Record<string, string>, type?: string): PortalActionField["upload"] | undefined {

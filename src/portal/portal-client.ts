@@ -1819,7 +1819,7 @@ function replaceXmlFieldValue(xml: string, field: PortalActionField, value: stri
 }
 
 function replaceRootFormId(xml: string, newRecordId: string): string {
-  return xml.replace(/(<form\b[^>]*\bid=")[^"]+(")/, `$1${escapeXmlAttribute(newRecordId)}$2`);
+  return xml.replace(/(<(?:[A-Za-z_][\w.-]*:)?form\b[^>]*\bid=")[^"]+(")/, `$1${escapeXmlAttribute(newRecordId)}$2`);
 }
 
 function upsertHeadId(xml: string, newRecordId: string): string {

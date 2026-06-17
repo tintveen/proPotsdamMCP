@@ -154,6 +154,8 @@ describe("portal action discovery", () => {
           <editable>false</editable>
           <hint>Bitte im Profilmenü andern.</hint>
         </field>
+        <numberfield id="SO_#ROOMS#_I_CP" refname="room_count" title="Zimmer" required="true">3</numberfield>
+        <datefield id="SO_#MOVEIN#_I_CP" refname="move_in" title="Einzug">01.06.2026</datefield>
         <choicefield id="SO_#TITLE#_I_CP" meta:saved_value="0002" refname="int_anrede" required="true">
           <choice id="0001" title="Frau"/>
           <choice id="0002" selected="true" title="Herr"/>
@@ -200,6 +202,20 @@ describe("portal action discovery", () => {
           portalId: "SO_#SMTP_ADDR#_I_CP",
           value: "user@example.test",
           editable: false
+        }),
+        expect.objectContaining({
+          name: "room_count",
+          portalId: "SO_#ROOMS#_I_CP",
+          type: "number",
+          value: "3",
+          editable: true
+        }),
+        expect.objectContaining({
+          name: "move_in",
+          portalId: "SO_#MOVEIN#_I_CP",
+          type: "date",
+          value: "01.06.2026",
+          editable: true
         }),
         expect.objectContaining({
           name: "int_anrede",

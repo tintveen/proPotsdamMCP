@@ -1,0 +1,274 @@
+{
+  "records": [
+    {
+      "id": "RENT-FIXTURE-1",
+      "title": "Mietkonto Kontostand offen 120,50 EUR Zeitraum 01.2026",
+      "serviceTitle": "Verträge",
+      "serviceId": "fixture-tenant",
+      "serviceUrl": "/synthetic/tenant",
+      "xuclass": "ESQ_TENANT",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "detailText": "Adresse Musterweg 10",
+      "expected": {
+        "domain": "rent_account",
+        "confidence": "high",
+        "status": "offen",
+        "amount": "120,50 EUR",
+        "period": "01.2026",
+        "address": "Musterweg 10"
+      }
+    },
+    {
+      "id": "CONTRACT-FIXTURE-1",
+      "title": "Mietvertrag.pdf",
+      "serviceTitle": "Verträge",
+      "serviceId": "fixture-tenant",
+      "serviceUrl": "/synthetic/tenant",
+      "xuclass": "ESQ_TENANT",
+      "itemKind": "resource",
+      "readable": true,
+      "rawSource": "boxlist",
+      "filename": "mietvertrag-fixture.pdf",
+      "resourceId": "CONTRACT-PDF",
+      "resourceOrigin": "ARCHIVE",
+      "mimeType": "application/pdf",
+      "detailText": "PDFDATA",
+      "expected": {
+        "domain": "contract",
+        "confidence": "high",
+        "exportable": true
+      }
+    },
+    {
+      "id": "STATEMENT-FIXTURE-1",
+      "title": "Betriebskostenabrechnung 2025.pdf",
+      "serviceTitle": "Dokumente",
+      "serviceId": "fixture-documents",
+      "serviceUrl": "/synthetic/documents",
+      "xuclass": "ESQ_DOCUMENTS",
+      "itemKind": "resource",
+      "readable": true,
+      "rawSource": "boxlist",
+      "filename": "betriebskostenabrechnung-2025.pdf",
+      "resourceId": "STATEMENT-PDF",
+      "mimeType": "application/pdf",
+      "expected": {
+        "domain": "statement",
+        "confidence": "medium",
+        "period": "2025",
+        "exportable": true
+      }
+    },
+    {
+      "id": "REPAIR-FIXTURE-1",
+      "title": "Schaden Heizung in Bearbeitung",
+      "serviceTitle": "Reparatur",
+      "serviceId": "fixture-repair",
+      "serviceUrl": "/synthetic/repair",
+      "xuclass": "ESQ_TENA_DMG",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "repair_status",
+        "confidence": "high",
+        "status": "in Bearbeitung"
+      }
+    },
+    {
+      "id": "SERVICE-FIXTURE-1",
+      "title": "Tierhaltung Hund beantragt",
+      "serviceTitle": "Service",
+      "serviceId": "fixture-service",
+      "serviceUrl": "/synthetic/service",
+      "xuclass": "ESQ_TENA_SRV",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "service_request",
+        "confidence": "high",
+        "status": "beantragt"
+      }
+    },
+    {
+      "id": "CONSUMPTION-FIXTURE-1",
+      "title": "Zählerstand Wasser 2026",
+      "serviceTitle": "Verbräuche",
+      "serviceId": "fixture-consumption",
+      "serviceUrl": "/synthetic/consumption",
+      "xuclass": "ESQ_TENA_CSM",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "consumption",
+        "confidence": "high",
+        "period": "2026"
+      }
+    },
+    {
+      "id": "LISTING-FIXTURE-1",
+      "title": "Wohnung 3 Zimmer Potsdam",
+      "serviceTitle": "Immobiliensuche",
+      "serviceId": "fixture-real-estate",
+      "serviceUrl": "/synthetic/real-estate",
+      "xuclass": "ESQ_IA_REOBJ",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "real_estate_listing",
+        "confidence": "high"
+      }
+    },
+    {
+      "id": "VIEWING-FIXTURE-1",
+      "title": "Besichtigungstermin verfügbar",
+      "serviceTitle": "Immobiliensuche",
+      "serviceId": "fixture-real-estate",
+      "serviceUrl": "/synthetic/real-estate",
+      "xuclass": "ESQ_IA_REOBJ",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "viewing_appointment",
+        "confidence": "medium",
+        "status": "verfügbar"
+      }
+    },
+    {
+      "id": "APPLICATION-FIXTURE-1",
+      "title": "Bewerbung Status eingegangen",
+      "serviceTitle": "Immobiliensuche",
+      "serviceId": "fixture-real-estate",
+      "serviceUrl": "/synthetic/real-estate",
+      "xuclass": "ESQ_IA_REOBJ",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "application_status",
+        "confidence": "medium",
+        "status": "eingegangen"
+      }
+    },
+    {
+      "id": "HOUSE-NOTICE-FIXTURE-1",
+      "title": "Hausinfo Treppenhaus",
+      "serviceTitle": "Meine Hausinfo",
+      "serviceId": "fixture-house-notice",
+      "serviceUrl": "/synthetic/pinboard",
+      "xuclass": "TN_PINBRD",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "house_notice",
+        "confidence": "high"
+      }
+    },
+    {
+      "id": "PROFILE-FIXTURE-1",
+      "title": "Meine Daten Kontaktweg Telefon",
+      "serviceTitle": "Meine Daten",
+      "serviceId": "fixture-profile",
+      "serviceUrl": "/synthetic/profile",
+      "xuclass": "ESQ_IA_PART",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "profile_setting",
+        "confidence": "high"
+      }
+    },
+    {
+      "id": "NOTIFICATION-FIXTURE-1",
+      "title": "Push Benachrichtigung aktiviert",
+      "serviceTitle": "Nachrichten",
+      "serviceId": "fixture-messages",
+      "serviceUrl": "/synthetic/messages",
+      "xuclass": "ESQ_MESSAGES",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "notification",
+        "confidence": "high",
+        "status": "aktiviert"
+      }
+    },
+    {
+      "id": "$BS_CALL_LINK_FIXTURE",
+      "title": "Externer Link zum Portal",
+      "serviceTitle": "Service",
+      "serviceId": "fixture-service",
+      "serviceUrl": "/synthetic/service",
+      "xuclass": "ESQ_TENA_SRV",
+      "itemKind": "external_link",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "external_link",
+        "confidence": "high"
+      }
+    },
+    {
+      "id": "DOCUMENT-FIXTURE-1",
+      "title": "Allgemeines Dokument.pdf",
+      "serviceTitle": "Dokumente",
+      "serviceId": "fixture-documents",
+      "xuclass": "ESQ_DOCUMENTS",
+      "itemKind": "resource",
+      "readable": true,
+      "rawSource": "boxlist",
+      "filename": "allgemeines-dokument.pdf",
+      "resourceId": "DOCUMENT-PDF",
+      "mimeType": "application/pdf",
+      "expected": {
+        "domain": "document",
+        "confidence": "high",
+        "exportable": false
+      }
+    },
+    {
+      "id": "ATTACHMENT-FIXTURE-1",
+      "title": "Anlage Foto Schaden.jpg",
+      "serviceTitle": "Reparatur",
+      "serviceId": "fixture-repair",
+      "serviceUrl": "/synthetic/repair",
+      "xuclass": "ESQ_TENA_DMG",
+      "itemKind": "resource",
+      "readable": true,
+      "rawSource": "boxlist",
+      "filename": "schaden-foto.jpg",
+      "resourceId": "ATTACHMENT-JPG",
+      "resourceOrigin": "FORM",
+      "mimeType": "image/jpeg",
+      "expected": {
+        "domain": "attachment",
+        "confidence": "high",
+        "exportable": true
+      }
+    },
+    {
+      "id": "UNKNOWN-FIXTURE-1",
+      "title": "Neutraler Vorgang",
+      "serviceTitle": "Allgemeine Vorgänge",
+      "serviceId": "fixture-generic",
+      "serviceUrl": "/synthetic/generic",
+      "xuclass": "SYNTHETIC_RECORDS",
+      "itemKind": "record",
+      "readable": true,
+      "rawSource": "boxlist",
+      "expected": {
+        "domain": "unknown",
+        "confidence": "low"
+      }
+    }
+  ]
+}

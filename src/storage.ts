@@ -90,7 +90,6 @@ export async function saveConfirmation(confirmation: StoredPortalActionConfirmat
 export async function loadConfirmation(confirmationId: string): Promise<StoredPortalActionConfirmation | null> {
   await ensureStorageDirs();
   const filePath = confirmationPath(confirmationId);
-  await deleteExpiredConfirmations();
   try {
     return JSON.parse(await readFile(filePath, "utf8")) as StoredPortalActionConfirmation;
   } catch {

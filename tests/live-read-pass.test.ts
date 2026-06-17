@@ -26,6 +26,13 @@ type LiveReadPassArtifactOptions = {
   detailed: boolean;
 };
 
+type LiveEnvironmentSummary = {
+  usernameConfigured: boolean;
+  passwordConfigured: boolean;
+  dataDirConfigured: boolean;
+  baseUrlConfigured: boolean;
+};
+
 function buildLiveReadPassArtifact(input: LiveReadPassArtifactInput, options: LiveReadPassArtifactOptions): unknown {
   const summary = {
     generatedAt: options.generatedAt,
@@ -68,6 +75,7 @@ function buildLiveReadPassArtifact(input: LiveReadPassArtifactInput, options: Li
     metadata: {
       liveTestOptIn: liveEnabled,
       detailsOptIn: options.detailed,
+      environment: liveEnvironmentSummary(),
       capabilityArtifactPath: input.capabilities.artifactPath,
       actionArtifactPath: input.actionMap.artifactPath,
       source: "tests/live-read-pass.test.ts"
@@ -89,6 +97,27 @@ function countActionKinds(actions: PortalAction[]): Record<string, number> {
     counts[action.actionKind] = (counts[action.actionKind] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+function liveEnvironmentSummary(env: NodeJS.ProcessEnv = process.env): LiveEnvironmentSummary {
+  return {
+    usernameConfigured: Boolean(env.PROPPOTSDAM_USERNAME?.trim()),
+    passwordConfigured: Boolean(env.PROPPOTSDAM_PASSWORD),
+    dataDirConfigured: Boolean(env.PROPPOTSDAM_DATA_DIR?.trim()),
+    baseUrlConfigured: Boolean(env.PROPPOTSDAM_BASE_URL?.trim())
+  };
+}
+
+function prepareOnlyPlaceholderValues(action: PortalAction): Record<string, string> {
+  return Object.fromEntries(
+    action.fields
+      .filter((field) => field.required && !field.hidden && !field.upload && !isSensitiveLiveField(field))
+      .map((field) => [field.name, "LIVE_TEST_PLACEHOLDER"])
+  );
+}
+
+function isSensitiveLiveField(field: PortalAction["fields"][number]): boolean {
+  return /csrf|token|cookie|session|password|sap-ffield/i.test(`${field.name} ${field.portalId ?? ""} ${field.label ?? ""}`);
 }
 
 describe("live read pass artifact helpers", () => {
@@ -169,6 +198,68 @@ describe("live read pass artifact helpers", () => {
     expect(serialized).not.toContain("csrf-token");
     expect(serialized).not.toContain("session=abc");
   });
+
+  it("summarizes live environment readiness without exposing values", () => {
+    const summary = liveEnvironmentSummary({
+      PROPPOTSDAM_USERNAME: "live-user@example.invalid",
+      PROPPOTSDAM_PASSWORD: "live-password",
+      PROPPOTSDAM_DATA_DIR: "/tmp/propotsdam-live",
+      PROPPOTSDAM_BASE_URL: "https://portal.example.invalid"
+    } as NodeJS.ProcessEnv);
+
+    expect(summary).toEqual({
+      usernameConfigured: true,
+      passwordConfigured: true,
+      dataDirConfigured: true,
+      baseUrlConfigured: true
+    });
+    expect(JSON.stringify(summary)).not.toContain("live-user");
+    expect(JSON.stringify(summary)).not.toContain("live-password");
+    expect(JSON.stringify(summary)).not.toContain("/tmp/propotsdam-live");
+  });
+
+  it("builds prepare-only placeholder values without file or sensitive fields", () => {
+    const values = prepareOnlyPlaceholderValues(createAction({
+      fields: [
+        {
+          name: "msg_txt",
+          label: "Beschreibung",
+          required: true,
+          hidden: false,
+          editable: true
+        },
+        {
+          name: "damage_photo",
+          label: "Foto",
+          required: true,
+          hidden: false,
+          editable: true,
+          upload: {
+            supported: true,
+            mode: "multipart_form_data",
+            endpoint: "/upload"
+          }
+        },
+        {
+          name: "csrfToken",
+          required: true,
+          hidden: true,
+          editable: false
+        },
+        {
+          name: "newPassword",
+          label: "Password",
+          required: true,
+          hidden: false,
+          editable: true
+        }
+      ]
+    }));
+
+    expect(values).toEqual({
+      msg_txt: "LIVE_TEST_PLACEHOLDER"
+    });
+  });
 });
 
 describe.skipIf(!liveEnabled)("live ProPotsdam read and prepare-only pass", () => {
@@ -211,11 +302,7 @@ describe.skipIf(!liveEnabled)("live ProPotsdam read and prepare-only pass", () =
     const firstActionDetail = firstAction ? await client.getPortalAction(firstAction.id) : undefined;
     const firstPreparable = actions.items.find((action) => action.preparable);
     const prepared = firstPreparable
-      ? await client.preparePortalAction(firstPreparable.id, Object.fromEntries(
-        firstPreparable.fields
-          .filter((field) => field.required && !field.hidden)
-          .map((field) => [field.name, "LIVE_TEST_PLACEHOLDER"])
-      ))
+      ? await client.preparePortalAction(firstPreparable.id, prepareOnlyPlaceholderValues(firstPreparable))
       : undefined;
     if (prepared) {
       expect(prepared.preparedOnly).toBe(true);
@@ -330,7 +417,7 @@ function createAction(action: Partial<PortalAction>): PortalAction {
     source: "boxlist",
     actionKind: action.actionKind ?? "form",
     method: "POST",
-    fields: [],
+    fields: action.fields ?? [],
     requiresInput: false,
     riskLevel: "low",
     preparable: action.preparable ?? true,

@@ -12,7 +12,7 @@ import {
   parseSessionStatus,
   toStructuredPortalRecord
 } from "../src/portal/parsers.js";
-import type { PortalRecordItem, PortalReadDomain } from "../src/types.js";
+import type { PortalRecordItem, PortalReadDomain, StructuredPortalRecordConfidence } from "../src/types.js";
 
 function fixture(name: string): string {
   return readFileSync(new URL(`./fixtures/redacted/${name}`, import.meta.url), "utf8");
@@ -170,6 +170,75 @@ describe("portal parsers", () => {
       status: "offen",
       address: "Hauptstr. 1"
     });
+  });
+
+  it("classifies redacted read-model fixture records and extracts safe file metadata", () => {
+    type ReadModelFixtureRecord = PortalRecordItem & {
+      expected: {
+        domain: PortalReadDomain;
+        confidence: StructuredPortalRecordConfidence;
+        status?: string;
+        period?: string;
+        amount?: string;
+        address?: string;
+        exportable?: boolean;
+      };
+    };
+    const parsed = JSON.parse(fixture("read-model-records.json")) as { records: ReadModelFixtureRecord[] };
+    const records = parsed.records.map(({ expected: _expected, ...record }) => record);
+    const expected = new Map(parsed.records.map((entry) => [entry.id, entry.expected]));
+    const structured = records.map(toStructuredPortalRecord);
+
+    expect(structured.map((item) => item.domain)).toEqual([
+      "rent_account",
+      "contract",
+      "statement",
+      "repair_status",
+      "service_request",
+      "consumption",
+      "real_estate_listing",
+      "viewing_appointment",
+      "application_status",
+      "house_notice",
+      "profile_setting",
+      "notification",
+      "external_link",
+      "document",
+      "attachment",
+      "unknown"
+    ]);
+    for (const item of structured) {
+      const expectedItem = expected.get(item.id)!;
+      expect(item).toMatchObject({
+        domain: expectedItem.domain,
+        confidence: expectedItem.confidence,
+        itemKind: records.find((record) => record.id === item.id)?.itemKind,
+        readable: true
+      });
+      for (const key of ["status", "period", "amount", "address"] as const) {
+        if (expectedItem[key]) {
+          expect(item[key]).toBe(expectedItem[key]);
+          expect(item.fields[key]).toBe(expectedItem[key]);
+        }
+      }
+      expect(item.fields.serviceTitle).toBeTruthy();
+    }
+
+    const files = extractPortalFileItems(records);
+    expect(files.map((file) => file.id)).toEqual([
+      "CONTRACT-FIXTURE-1",
+      "STATEMENT-FIXTURE-1",
+      "DOCUMENT-FIXTURE-1",
+      "ATTACHMENT-FIXTURE-1"
+    ]);
+    for (const file of files) {
+      expect(file.exportable).toBe(expected.get(file.id)?.exportable);
+      expect(file.sourceRecordId).toBe(file.id);
+      expect(file.filename).toBeTruthy();
+      expect(file.mimeType).toBeTruthy();
+    }
+    expect(files.find((file) => file.id === "$BS_CALL_LINK_FIXTURE")).toBeUndefined();
+    expect(JSON.stringify(files)).not.toContain("PDFDATA");
   });
 
   it("normalizes detail action form fixtures", () => {

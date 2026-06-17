@@ -66,6 +66,8 @@ Human output uses compact tables for lists and readable detail sections for sing
 
 TTY sessions can guide missing ids and write fields with prompts. Non-interactive runs never prompt; pass ids and values explicitly with `--value key=value`, `--values-json '{"key":"value"}'`, or `--values-file values.json`. For repair photos, pass a local JPEG/PNG path with `--attachment-file <path>`; the client only commits it when the portal form exposes a supported upload endpoint, otherwise the commit request is rejected before any portal write.
 
+Live commits are intentionally limited. This version can commit only supported `Meine Daten`/`save_partner` profile changes and detail-based `Reparatur`/`cmdsend` damage reports after a short-lived confirmation id is created; all other write domains remain draft-only.
+
 German aliases are available for common groups:
 
 - `posteingang` for `inbox`

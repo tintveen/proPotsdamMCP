@@ -595,6 +595,47 @@ describe("PortalClient HTTP flow", () => {
     });
   });
 
+  it("commits namespaced repair XML with escaped values, number/date fields, and stable metadata", async () => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      namespacedRepairDetailForm: true
+    });
+    const description = "Tür <klemmt> & \"summt\"";
+
+    const confirmation = await client.requestPortalActionCommit("cmdsend", {
+      msg_txt: description,
+      TOPIC_IB_DOOR_1: "TUEROEFFNER",
+      ROOMS_CHO_IB_1: "Wohnung",
+      repair_cost: "120",
+      preferred_date: "17.06.2026"
+    });
+    expect(confirmation).toMatchObject({
+      ok: true,
+      validationIssues: []
+    });
+
+    await client.commitPortalAction(confirmation.confirmationId!);
+    const savePost = requests.find((request) => request.method === "POST" && request.url.includes("name=save"))!;
+    const saveUrl = new URL(savePost.url);
+    const newId = saveUrl.searchParams.get("id");
+    const body = String(savePost.body);
+
+    expect(newId).toMatch(/[0-9A-F-]{36}/);
+    expect(body).toContain(`<form id="${newId}"`);
+    expect(body).toContain(`<head><id>${newId}</id></head>`);
+    expect(body).not.toContain("<oppc:form");
+    expect(body).not.toContain("xmlns:oppc");
+    expect(body).toContain("Tür &lt;klemmt&gt; &amp; \"summt\"");
+    expect(body).toContain('<choice id="Wohnung" title="Wohnung" selected="true"/>');
+    expect(body).not.toContain('<choice id="Aufgang" selected="true"');
+    expect(body).toContain('<numberfield id="COST_FIELD" refname="repair_cost">120</numberfield>');
+    expect(body).toContain('<datefield id="DATE_FIELD" refname="preferred_date">17.06.2026</datefield>');
+    expect(body).toContain("<history><save oldId=\"OLD\"");
+    expect(body).toContain(`oldId="REPAIR-FORM" newId="${newId}"`);
+    expect(body).not.toContain("old-client");
+    expect(body).toContain("webapp-professional");
+  });
+
   it("creates and commits repair reports with a supported image upload field", async () => {
     const { client, requests, tempDir } = await createMockClient({
       loggedServicesBody: servicesWithRepairDetail(),
@@ -677,6 +718,75 @@ describe("PortalClient HTTP flow", () => {
     expect(actionGets).toHaveLength(1);
   });
 
+  it("returns failed commit results for save, upload, and final action failures", async () => {
+    const values = {
+      msg_txt: "Die Haustür schließt nicht.",
+      TOPIC_IB_DOOR_1: "TUEROEFFNER"
+    };
+
+    const saveFailure = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairDetailForm: true,
+      failRepairSave: true
+    });
+    const saveConfirmation = await saveFailure.client.requestPortalActionCommit("cmdsend", values);
+    const saveResult = await saveFailure.client.commitPortalAction(saveConfirmation.confirmationId!);
+    expect(saveResult).toMatchObject({
+      ok: false,
+      actionId: "cmdsend",
+      status: 500,
+      summary: expect.stringContaining("while saving")
+    });
+    await expect(saveFailure.client.commitPortalAction(saveConfirmation.confirmationId!)).rejects.toMatchObject({
+      code: "CONFIRMATION_NOT_FOUND"
+    });
+
+    const uploadFailure = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairUploadDetailForm: true,
+      failRepairUpload: true
+    });
+    const photoPath = path.join(uploadFailure.tempDir, "damage.png");
+    await writeFile(photoPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const uploadConfirmation = await uploadFailure.client.requestPortalActionCommit("cmdsend", {
+      ...values,
+      attachmentFilePath: photoPath
+    });
+    const uploadResult = await uploadFailure.client.commitPortalAction(uploadConfirmation.confirmationId!);
+    expect(uploadResult).toMatchObject({
+      ok: false,
+      actionId: "cmdsend",
+      status: 502,
+      summary: expect.stringContaining("while uploading attachment"),
+      attachmentUploads: [
+        {
+          fieldName: "damage_photo",
+          filename: "damage.png",
+          ok: false,
+          status: 502
+        }
+      ]
+    });
+    expect(uploadFailure.requests.filter((request) => request.method === "GET" && request.url.includes("name=cmdsend"))).toHaveLength(0);
+
+    const actionFailure = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairDetailForm: true,
+      failRepairCommit: true
+    });
+    const actionConfirmation = await actionFailure.client.requestPortalActionCommit("cmdsend", values);
+    const actionResult = await actionFailure.client.commitPortalAction(actionConfirmation.confirmationId!);
+    expect(actionResult).toMatchObject({
+      ok: false,
+      actionId: "cmdsend",
+      status: 409,
+      summary: expect.stringContaining("Portal returned HTTP 409")
+    });
+    await expect(actionFailure.client.commitPortalAction(actionConfirmation.confirmationId!)).rejects.toMatchObject({
+      code: "CONFIRMATION_NOT_FOUND"
+    });
+  });
+
   it("requires a unique target for repeated detail-based repair commits", async () => {
     const { client, requests } = await createMockClient({
       loggedServicesBody: servicesWithRepairDetail(),
@@ -753,6 +863,40 @@ describe("PortalClient HTTP flow", () => {
     await expect(loadConfirmation("stale-cmdsend")).resolves.toBeNull();
   });
 
+  it("rejects expired confirmations with an explicit expiry error", async () => {
+    const { client } = await createMockClient({
+      loggedServicesBody: servicesWithProfileDetail()
+    });
+    const { loadConfirmation, saveConfirmation } = await import("../src/storage.js");
+
+    await saveConfirmation({
+      confirmationId: "expired-save-partner",
+      actionId: "save_partner",
+      actionTitle: "Speichern",
+      recordId: "PROFILE-1",
+      recordTitle: "Meine Daten",
+      serviceId: "ESQ_IA_PART",
+      xuclass: "ESQ_IA_PART",
+      serviceUrl: "/profile-service",
+      values: {
+        phone_ref: "+15550100001"
+      },
+      diff: [
+        {
+          name: "phone_ref",
+          proposedValue: "+15550100001"
+        }
+      ],
+      createdAt: "2026-05-03T00:00:00.000Z",
+      expiresAt: "2026-05-03T00:01:00.000Z"
+    });
+
+    await expect(client.commitPortalAction("expired-save-partner")).rejects.toMatchObject({
+      code: "CONFIRMATION_EXPIRED"
+    });
+    await expect(loadConfirmation("expired-save-partner")).resolves.toBeNull();
+  });
+
   it("does not create confirmations for locked fields, unknown fields, or blocked actions", async () => {
     const { client, requests } = await createMockClient({
       loggedServicesBody: servicesWithActions(),
@@ -796,6 +940,10 @@ async function createMockClient(options: {
   repairDetailForm?: boolean;
   repairUploadDetailForm?: boolean;
   dualRepairDetailForms?: boolean;
+  namespacedRepairDetailForm?: boolean;
+  failRepairSave?: boolean;
+  failRepairUpload?: boolean;
+  failRepairCommit?: boolean;
 } = {}) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
   tempDirs.push(tempDir);
@@ -818,6 +966,15 @@ async function createMockClient(options: {
   });
 
   const requests: Array<{ url: string; method?: string; body?: BodyInit | null }> = [];
+  const hasRepairDetail = Boolean(
+    options.repairDetailForm ||
+      options.repairUploadDetailForm ||
+      options.dualRepairDetailForms ||
+      options.namespacedRepairDetailForm ||
+      options.failRepairSave ||
+      options.failRepairUpload ||
+      options.failRepairCommit
+  );
   const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const requestUrl = String(url);
     requests.push({ url: requestUrl, method: init?.method, body: init?.body });
@@ -975,26 +1132,26 @@ async function createMockClient(options: {
       });
     }
 
-    if ((options.repairDetailForm || options.repairUploadDetailForm || options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=cmdsend")) {
+    if (hasRepairDetail && requestUrl.includes("/repair-service") && requestUrl.includes("name=cmdsend")) {
       const finalId = options.dualRepairDetailForms
         ? (requestUrl.includes("originalId=REPAIR-FORM-B") ? "FINAL-REPAIR-B" : "FINAL-REPAIR-A")
         : "FINAL-REPAIR-1";
-      return new Response(`oppc://openform?id=${finalId}`, {
-        status: 200,
+      return new Response(options.failRepairCommit ? "Commit rejected" : `oppc://openform?id=${finalId}`, {
+        status: options.failRepairCommit ? 409 : 200,
         headers: { "content-type": "text/plain" }
       });
     }
 
-    if ((options.repairDetailForm || options.repairUploadDetailForm || options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=save")) {
-      return new Response("", {
-        status: 200,
+    if (hasRepairDetail && requestUrl.includes("/repair-service") && requestUrl.includes("name=save")) {
+      return new Response(options.failRepairSave ? "Save failed" : "", {
+        status: options.failRepairSave ? 500 : 200,
         headers: { "content-type": "text/html" }
       });
     }
 
     if (options.repairUploadDetailForm && requestUrl.includes("/repair-upload")) {
-      return new Response("", {
-        status: 200,
+      return new Response(options.failRepairUpload ? "Upload failed" : "", {
+        status: options.failRepairUpload ? 502 : 200,
         headers: { "content-type": "text/html" }
       });
     }
@@ -1028,7 +1185,7 @@ async function createMockClient(options: {
       });
     }
 
-    if ((options.repairDetailForm || options.repairUploadDetailForm) && requestUrl.includes("/repair-service") && requestUrl.includes("name=boxlist")) {
+    if ((hasRepairDetail && !options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("name=boxlist")) {
       return new Response(`
         <boxlist>
           <box>
@@ -1039,8 +1196,14 @@ async function createMockClient(options: {
       `, { status: 200, headers: { "content-type": "application/xml" } });
     }
 
-    if ((options.repairDetailForm || options.repairUploadDetailForm) && requestUrl.includes("/repair-service") && requestUrl.includes("id=REPAIR-FORM")) {
-      return new Response(repairDetailForm("REPAIR-FORM", { upload: options.repairUploadDetailForm }), {
+    if ((hasRepairDetail && !options.dualRepairDetailForms) && requestUrl.includes("/repair-service") && requestUrl.includes("id=REPAIR-FORM")) {
+      return new Response(repairDetailForm("REPAIR-FORM", {
+        upload: options.repairUploadDetailForm,
+        namespaced: options.namespacedRepairDetailForm,
+        numberDate: options.namespacedRepairDetailForm,
+        existingHistory: options.namespacedRepairDetailForm,
+        existingClient: options.namespacedRepairDetailForm
+      }), {
         status: 200,
         headers: { "content-type": "application/xml" }
       });
@@ -1129,10 +1292,20 @@ function profileDetailForm(): string {
   `;
 }
 
-function repairDetailForm(id = "REPAIR-FORM", options: { upload?: boolean } = {}): string {
+function repairDetailForm(id = "REPAIR-FORM", options: {
+  upload?: boolean;
+  namespaced?: boolean;
+  numberDate?: boolean;
+  existingHistory?: boolean;
+  existingClient?: boolean;
+} = {}): string {
+  const formTag = options.namespaced ? "oppc:form" : "form";
+  const namespace = options.namespaced ? ' xmlns:oppc="urn:oppc" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:oppc schema.xsd"' : "";
   return `
-    <form id="${id}">
+    <${formTag} id="${id}"${namespace}>
       <head><id>${id}</id></head>
+      ${options.existingClient ? '<client><editor name="old-client" version="0"/></client>' : ""}
+      ${options.existingHistory ? '<history><save oldId="OLD" newId="OLDER" userName="fixture" timestamp="2026-05-03T00:00:00Z"/></history>' : ""}
       <title>Schaden melden</title>
       <action>
         <id>cmdsend</id>
@@ -1150,9 +1323,11 @@ function repairDetailForm(id = "REPAIR-FORM", options: { upload?: boolean } = {}
         <choice id="TUER" title="Tür"/>
         <choice id="SCHLOSS" title="Schloss"/>
       </choicefield>
+      ${options.numberDate ? '<numberfield id="COST_FIELD" refname="repair_cost">0</numberfield>' : ""}
+      ${options.numberDate ? '<datefield id="DATE_FIELD" refname="preferred_date">01.06.2026</datefield>' : ""}
       ${options.upload ? '<filefield id="ATTACH_PHOTO" refname="damage_photo" title="Foto" uploadUrl="/repair-upload" accept="image/jpeg,image/png"/>' : ""}
       <textfield id="ESQ_CHANGED" visibility="hidden">false</textfield>
-    </form>
+    </${formTag}>
   `;
 }
 
