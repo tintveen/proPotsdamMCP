@@ -2,7 +2,7 @@
 
 ![ProPotsdam MCP banner](proPotsdamMCPBanner.png)
 
-Unofficial local MCP server for the ProPotsdam/Easysquare customer portal.
+Unofficial local MCP server for the ProPotsdam/Easysquare customer portal, STEP bulky-waste pickup, and Potsdam abandoned-waste reports.
 
 It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Limited write support is guarded by an explicit confirmation flow and should be treated as experimental.
 
@@ -33,7 +33,7 @@ npx -y propotsdam-cli auth set
 
 Requirements: Node.js 22+, npm/npx, macOS Keychain, and a ProPotsdam/Easysquare account.
 
-For the normal ProPotsdam portal, credential setup does not need a base URL. Local config, session cookies, traces, confirmations, and MCP-created exports live under:
+For the normal ProPotsdam portal, credential setup does not need a base URL. Local config, session cookies, traces, confirmations, short-lived normalized report photos, and MCP-created exports live under:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/
@@ -68,6 +68,21 @@ TTY sessions can guide missing ids and write fields with prompts. Non-interactiv
 
 Live commits are intentionally limited. This version can commit only supported `Meine Daten`/`save_partner` profile changes and detail-based `Reparatur`/`cmdsend` damage reports after a short-lived confirmation id is created; all other write domains remain draft-only.
 
+## Bulky and abandoned waste
+
+The MCP has two separate, confirmation-protected workflows:
+
+- Use STEP pickup for items you are disposing of yourself, for example: “Prepare a bulky-waste pickup for one bed from my contract address, available from 2026-08-20.”
+- Use the Potsdam abandoned-waste report for an existing pile whose owner is unknown, for example: “Prepare an abandoned-waste report for the pile at my contract address using `/path/to/photo.jpg`.”
+
+Contact and address fields may be derived from one unambiguous, high-confidence ProPotsdam contract. Explicit values always win. Multiple contract addresses are returned as choices instead of being guessed.
+
+Preparation never creates the external request. A complete draft must first be turned into a short-lived confirmation and then committed using only its confirmation id. STEP returns that the pickup request was received; the actual collection date may follow later. Guest Potsdam reports require activation through the email sent by the city.
+
+If a final network response cannot be verified, the tool returns `outcomeUncertain: true` and consumes the confirmation. Do not retry automatically; first check for the STEP response or Potsdam activation email to avoid a duplicate request.
+
+Abandoned-waste report descriptions, locations, and photos may become public. Photos are normalized to metadata-free JPEG before confirmation; JPEG, PNG, and static WebP inputs are supported, while GIF, HEIC, and HEIF require conversion first.
+
 German aliases are available for common groups:
 
 - `posteingang` for `inbox`
@@ -96,6 +111,12 @@ German aliases are available for common groups:
 - `propotsdam_prepare_portal_action`
 - `propotsdam_request_portal_action_commit`
 - `propotsdam_commit_portal_action`
+- `propotsdam_prepare_bulky_waste_pickup`
+- `propotsdam_request_bulky_waste_pickup_commit`
+- `propotsdam_commit_bulky_waste_pickup`
+- `propotsdam_prepare_abandoned_waste_report`
+- `propotsdam_request_abandoned_waste_report_commit`
+- `propotsdam_commit_abandoned_waste_report`
 
 ## Development
 

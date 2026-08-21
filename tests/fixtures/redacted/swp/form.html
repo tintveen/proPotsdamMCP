@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="de">
+  <body>
+    <form id="commandDE77137">
+      <label for="anrede">Anrede <span class="mwf-required">*</span></label>
+      <select id="anrede" name="anrede">
+        <option value="VALUE_EMPTY">Bitte wählen</option>
+        <option value="MISS">Frau</option>
+        <option value="MISTER">Herr</option>
+        <option value="Keine Angabe">Keine Angabe</option>
+      </select>
+
+      <label for="name">Name <span class="mwf-required">*</span></label>
+      <input id="name" name="name" type="text">
+      <label for="vorname">Vorname</label>
+      <input id="vorname" name="vorname" type="text">
+      <label for="strasse">Straße <span class="mwf-required">*</span></label>
+      <input id="strasse" name="strasse" type="text">
+      <label for="hausnummer">Hausnummer <span class="mwf-required">*</span></label>
+      <input id="hausnummer" name="hausnummer" type="text">
+      <label for="plz">PLZ <span class="mwf-required">*</span></label>
+      <input id="plz" name="plz" type="text">
+      <label for="ort">Ort <span class="mwf-required">*</span></label>
+      <input id="ort" name="ort" type="text">
+      <label for="Kassenzeichen">Kassenzeichen</label>
+      <input id="Kassenzeichen" name="Kassenzeichen" type="text">
+      <label for="telefon">Telefon</label>
+      <input id="telefon" name="telefon" type="text">
+      <label for="mail">E-Mail <span class="mwf-required">*</span></label>
+      <input id="mail" name="mail" type="email">
+
+      <label for="alternative_adresse">Abweichende Abholadresse</label>
+      <input id="alternative_adresse" name="alternative_adresse" type="checkbox" value="alternativ_adresse">
+      <input name="_alternative_adresse" type="hidden" value="on">
+      <label for="strasse2">Straße Abholort <span class="mwf-required">*</span></label>
+      <input id="strasse2" name="strasse2" type="text">
+      <label for="hausnummer2">Hausnummer Abholort <span class="mwf-required">*</span></label>
+      <input id="hausnummer2" name="hausnummer2" type="text">
+      <label for="plz2">PLZ Abholort <span class="mwf-required">*</span></label>
+      <input id="plz2" name="plz2" type="text">
+      <label for="ort2">Ort Abholort <span class="mwf-required">*</span></label>
+      <input id="ort2" name="ort2" type="text">
+
+      <label for="couch">Couch, Sofa, Bett</label>
+      <input id="couch" name="couch" type="text">
+      <label for="matratze">Matratze</label>
+      <input id="matratze" name="matratze" type="text">
+      <label for="schrank">Schrank, Sideboard, Regal</label>
+      <input id="schrank" name="schrank" type="text">
+      <label for="sessel">Sessel</label>
+      <input id="sessel" name="sessel" type="text">
+      <label for="stuhl">Stuhl, Hocker</label>
+      <input id="stuhl" name="stuhl" type="text">
+      <label for="teppich">Teppich, Auslegware in Quadratmetern</label>
+      <input id="teppich" name="teppich" type="text">
+      <label for="tisch">Tisch</label>
+      <input id="tisch" name="tisch" type="text">
+      <label for="sonstiges">Sonstiger Sperrmüll</label>
+      <textarea id="sonstiges" name="sonstiges"></textarea>
+      <label for="fahrrad">Fahrrad</label>
+      <input id="fahrrad" name="fahrrad" type="text">
+      <label for="waeschestaender">Wäscheständer</label>
+      <input id="waeschestaender" name="waeschestaender" type="text">
+      <label for="sonstiger_schrott">Sonstiger Schrott</label>
+      <textarea id="sonstiger_schrott" name="sonstiger_schrott"></textarea>
+
+      <label for="elektroauswahl">Elektroschrott</label>
+      <input id="elektroauswahl" name="elektroauswahl" type="checkbox" value="elektroschrott">
+      <input name="_elektroauswahl" type="hidden" value="on">
+      <label for="kuehlschrank">Kühl- und Gefrierschrank</label>
+      <input id="kuehlschrank" data-mwf-id="fridge-id" name="kuehlschrank" type="text">
+      <label for="waschmaschine">Waschmaschine, Trockner</label>
+      <input id="waschmaschine" data-mwf-id="washer-id" name="waschmaschine" type="text">
+      <label for="Geschirrspueler">Geschirrspüler</label>
+      <input id="Geschirrspueler" name="Geschirrspueler" type="text">
+      <label for="Herd">Herd</label>
+      <input id="Herd" name="Herd" type="text">
+      <label for="Bildschirme">Fernseher, Bildschirm</label>
+      <input id="Bildschirme" name="Bildschirme" type="text">
+      <label for="Staubsauger">Staubsauger</label>
+      <input id="Staubsauger" name="Staubsauger" type="text">
+      <label for="Kante_50">Elektrogerät über 50 Zentimeter Kantenlänge</label>
+      <input id="Kante_50" name="Kante_50" type="text">
+      <label for="sonstiges_elektro">Sonstige Elektrokleingeräte</label>
+      <textarea id="sonstiges_elektro" data-mwf-id="other-small-id" name="sonstiges_elektro"></textarea>
+
+      <label for="abholtermin">Frühestmöglicher Termin <span class="mwf-required">*</span></label>
+      <input id="abholtermin" name="abholtermin" type="text">
+      <label for="Ablageort">Ablageort</label>
+      <input id="Ablageort" name="Ablageort" type="text">
+      <label for="textfeld">Mitteilung</label>
+      <textarea id="textfeld" name="textfeld"></textarea>
+    </form>
+
+    <script>
+      jQuery("#commandDE77137").webforms({
+        conditions: [{
+          conditions: [
+            ["fridge-id", "kuehlschrank", "empty", "", ""],
+            ["washer-id", "waschmaschine", "empty", "", ""]
+          ],
+          fields: [{ "input": "other-small-id", "state": "disabled", "value": "" }]
+        }],
+        url: "/servlet/form?_uid=DE77137&_lang=de_DE&_view=webform&_mwfToken%3ADE77137=REDACTED_TOKEN"
+      });
+    </script>
+  </body>
+</html>

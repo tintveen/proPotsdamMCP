@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/mcp.js";
+import { PortalClient } from "../src/portal/portal-client.js";
+import type { WasteServiceLike } from "../src/waste/types.js";
 
 describe("MCP server", () => {
   it("registers the data-only ProPotsdam tool surface", () => {
@@ -15,6 +17,8 @@ describe("MCP server", () => {
       "propotsdam_auth_login",
       "propotsdam_auth_logout",
       "propotsdam_auth_status",
+      "propotsdam_commit_abandoned_waste_report",
+      "propotsdam_commit_bulky_waste_pickup",
       "propotsdam_commit_portal_action",
       "propotsdam_discover_capabilities",
       "propotsdam_discover_write_actions",
@@ -30,6 +34,10 @@ describe("MCP server", () => {
       "propotsdam_list_structured_portal_records",
       "propotsdam_prepare_portal_action",
       "propotsdam_prepare_portal_write",
+      "propotsdam_prepare_abandoned_waste_report",
+      "propotsdam_prepare_bulky_waste_pickup",
+      "propotsdam_request_abandoned_waste_report_commit",
+      "propotsdam_request_bulky_waste_pickup_commit",
       "propotsdam_request_portal_action_commit",
       "propotsdam_list_portal_records"
     ].sort());
@@ -87,5 +95,78 @@ describe("MCP server", () => {
     const commitTool = tools.propotsdam_commit_portal_action!;
     expect(commitTool.inputSchema?.safeParse({ confirmationId: "confirmation-id" }).success).toBe(true);
     expect(commitTool.inputSchema?.safeParse({ confirmationId: "" }).success).toBe(false);
+
+    const prepareBulkyWasteTool = tools.propotsdam_prepare_bulky_waste_pickup!;
+    expect(prepareBulkyWasteTool.inputSchema?.safeParse({
+      earliestPickupDate: "2026-08-20",
+      items: [{ kind: "couch_sofa_bed", quantity: 1 }],
+      contact: { salutation: "unspecified", email: "person@example.test" }
+    }).success).toBe(true);
+    expect(prepareBulkyWasteTool.inputSchema?.safeParse({
+      earliestPickupDate: "20.08.2026",
+      items: [{ kind: "not-supported", quantity: 1 }]
+    }).success).toBe(false);
+
+    const requestWasteReportTool = tools.propotsdam_request_abandoned_waste_report_commit!;
+    expect(requestWasteReportTool.inputSchema?.safeParse({
+      description: "Abgestelltes Bett neben den Mülltonnen.",
+      photoPaths: ["/tmp/pile.jpg"],
+      privacyConsent: true,
+      location: { latitude: 52.4, longitude: 13.05 }
+    }).success).toBe(true);
+    expect(requestWasteReportTool.inputSchema?.safeParse({
+      description: "x",
+      photoPaths: [],
+      privacyConsent: false
+    }).success).toBe(false);
+
+    expect(tools.propotsdam_commit_bulky_waste_pickup?.inputSchema?.safeParse({
+      confirmationId: "11111111-1111-4111-8111-111111111111"
+    }).success).toBe(true);
+    expect(tools.propotsdam_commit_abandoned_waste_report?.inputSchema?.safeParse({ confirmationId: "" }).success).toBe(false);
+  });
+
+  it("delegates waste tools to the separately injected waste service", async () => {
+    const wasteService: WasteServiceLike = {
+      prepareBulkyWastePickup: vi.fn(async () => ({
+        ok: true as const,
+        preparedOnly: true as const,
+        willSend: false as const,
+        workflow: "bulky_waste_pickup" as const,
+        fieldSources: {},
+        missingFields: [],
+        validationIssues: [],
+        warnings: [],
+        review: ["Bed pickup preview"],
+        privacyUrls: []
+      })),
+      requestBulkyWastePickupCommit: vi.fn(),
+      commitBulkyWastePickup: vi.fn(),
+      prepareAbandonedWasteReport: vi.fn(),
+      requestAbandonedWasteReportCommit: vi.fn(),
+      commitAbandonedWasteReport: vi.fn(async (confirmationId) => ({
+        ok: true as const,
+        workflow: "abandoned_waste_report" as const,
+        state: "awaiting_email_confirmation" as const,
+        committedAt: "2026-08-15T10:00:00.000Z",
+        status: 200,
+        summary: `Committed ${confirmationId}`
+      }))
+    };
+    const server = createServer(new PortalClient(), wasteService) as unknown as {
+      _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ structuredContent?: Record<string, unknown> }> }>;
+    };
+
+    const input = {
+      earliestPickupDate: "2026-08-20",
+      items: [{ kind: "couch_sofa_bed", quantity: 1 }]
+    };
+    const prepared = await server._registeredTools.propotsdam_prepare_bulky_waste_pickup!.handler(input);
+    expect(wasteService.prepareBulkyWastePickup).toHaveBeenCalledWith(input);
+    expect(prepared.structuredContent).toMatchObject({ ok: true, review: ["Bed pickup preview"] });
+
+    const committed = await server._registeredTools.propotsdam_commit_abandoned_waste_report!.handler({ confirmationId: "confirmation-1" });
+    expect(wasteService.commitAbandonedWasteReport).toHaveBeenCalledWith("confirmation-1");
+    expect(committed.structuredContent).toMatchObject({ state: "awaiting_email_confirmation" });
   });
 });

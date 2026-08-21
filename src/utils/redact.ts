@@ -5,7 +5,8 @@ const SECRET_PATTERNS = [
   /(password=)[^&\s"]+/gi,
   /(X-CSRF-Token["']?\s*[:=]\s*["']?)[^"',\s]+/gi,
   /(Cookie["']?\s*[:=]\s*["']?)[^"',]+/gi,
-  /(Set-Cookie["']?\s*[:=]\s*["']?)[^"',]+/gi
+  /(Set-Cookie["']?\s*[:=]\s*["']?)[^"',]+/gi,
+  /((?:form[-_]?definition|session[-_]?(?:id|key)|nonce|mwf[-_]?(?:token|key))=)[^&\s"']+/gi
 ];
 
 export function redactSecrets(value: unknown): unknown {
@@ -29,5 +30,5 @@ export function redactSecrets(value: unknown): unknown {
 }
 
 function isSecretKey(key: string): boolean {
-  return /password|cookie|csrf|token|sap-ffield/i.test(key);
+  return /password|cookie|csrf|token|sap-ffield|nonce|form[-_]?definition|session[-_]?(?:id|key)|mwf[-_]?(?:key|token)/i.test(key);
 }
