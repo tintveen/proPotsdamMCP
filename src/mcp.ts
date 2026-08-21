@@ -3,6 +3,8 @@ import * as z from "zod/v4";
 import { PortalError } from "./errors.js";
 import { PortalClient } from "./portal/portal-client.js";
 import { redactSecrets } from "./utils/redact.js";
+import { WasteService } from "./waste/waste-service.js";
+import type { WasteServiceLike } from "./waste/types.js";
 
 const READ_DOMAIN_VALUES = [
   "rent_account",
@@ -50,7 +52,10 @@ const WRITE_DOMAIN_VALUES = [
   "external_navigation"
 ] as const;
 
-export function createServer(client = new PortalClient()): McpServer {
+export function createServer(
+  client = new PortalClient(),
+  wasteService: WasteServiceLike = new WasteService(client)
+): McpServer {
   const server = new McpServer({
     name: "proPotsdam MCP",
     version: "0.1.0"
@@ -206,8 +211,132 @@ export function createServer(client = new PortalClient()): McpServer {
     }
   }), async ({ confirmationId }) => wrapTool(() => client.commitPortalAction(confirmationId)));
 
+  server.registerTool("propotsdam_prepare_bulky_waste_pickup", withToolTitle("propotsdam_prepare_bulky_waste_pickup", {
+    description: "Preview a STEP bulky-waste pickup request without creating a pickup request.",
+    inputSchema: bulkyWasteInputSchema
+  }), async (input) => wrapTool(() => wasteService.prepareBulkyWastePickup(input)));
+
+  server.registerTool("propotsdam_request_bulky_waste_pickup_commit", withToolTitle("propotsdam_request_bulky_waste_pickup_commit", {
+    description: "Create a short-lived confirmation for a reviewed STEP bulky-waste pickup request.",
+    inputSchema: bulkyWasteInputSchema
+  }), async (input) => wrapTool(() => wasteService.requestBulkyWastePickupCommit(input)));
+
+  server.registerTool("propotsdam_commit_bulky_waste_pickup", withToolTitle("propotsdam_commit_bulky_waste_pickup", {
+    description: "Commit a previously confirmed STEP bulky-waste pickup request by confirmation id.",
+    inputSchema: confirmationInputSchema
+  }), async ({ confirmationId }) => wrapTool(() => wasteService.commitBulkyWastePickup(confirmationId)));
+
+  server.registerTool("propotsdam_prepare_abandoned_waste_report", withToolTitle("propotsdam_prepare_abandoned_waste_report", {
+    description: "Preview a Potsdam abandoned-waste report without creating a city report.",
+    inputSchema: abandonedWasteInputSchema
+  }), async (input) => wrapTool(() => wasteService.prepareAbandonedWasteReport(input)));
+
+  server.registerTool("propotsdam_request_abandoned_waste_report_commit", withToolTitle("propotsdam_request_abandoned_waste_report_commit", {
+    description: "Create a short-lived confirmation for a reviewed Potsdam abandoned-waste report.",
+    inputSchema: abandonedWasteInputSchema
+  }), async (input) => wrapTool(() => wasteService.requestAbandonedWasteReportCommit(input)));
+
+  server.registerTool("propotsdam_commit_abandoned_waste_report", withToolTitle("propotsdam_commit_abandoned_waste_report", {
+    description: "Commit a previously confirmed Potsdam abandoned-waste report by confirmation id.",
+    inputSchema: confirmationInputSchema
+  }), async ({ confirmationId }) => wrapTool(() => wasteService.commitAbandonedWasteReport(confirmationId)));
+
   return server;
 }
+
+const contactSchema = z.object({
+  salutation: z.enum(["female", "male", "unspecified"]).optional(),
+  firstName: z.string().trim().min(1).optional(),
+  lastName: z.string().trim().min(1).optional(),
+  email: z.email().optional(),
+  phone: z.string().trim().min(1).optional(),
+  street: z.string().trim().min(1).optional(),
+  houseNumber: z.string().trim().min(1).optional(),
+  postalCode: z.string().regex(/^\d{5}$/).optional(),
+  city: z.string().trim().min(1).optional()
+}).strict();
+
+const addressSchema = z.object({
+  street: z.string().trim().min(1),
+  houseNumber: z.string().trim().min(1),
+  postalCode: z.string().regex(/^\d{5}$/),
+  city: z.string().trim().min(1)
+}).strict();
+
+const countedItemKinds = [
+  "couch_sofa_bed",
+  "mattress",
+  "cabinet_sideboard_shelf",
+  "armchair",
+  "chair_stool",
+  "table_table_tennis",
+  "bicycle",
+  "drying_rack",
+  "refrigerator_freezer",
+  "washer_dryer",
+  "dishwasher",
+  "cooker",
+  "tv_monitor",
+  "vacuum_cleaner"
+] as const;
+
+const describedItemKinds = [
+  "other_bulky",
+  "other_metal",
+  "large_electrical_over_50cm",
+  "other_small_electrical"
+] as const;
+
+const bulkyWasteItemSchema = z.union([
+  z.object({
+    kind: z.enum(countedItemKinds),
+    quantity: z.number().int().positive()
+  }).strict(),
+  z.object({
+    kind: z.literal("floor_covering"),
+    squareMeters: z.number().positive()
+  }).strict(),
+  z.object({
+    kind: z.enum(describedItemKinds),
+    description: z.string().trim().min(1),
+    quantity: z.number().int().positive()
+  }).strict()
+]);
+
+const bulkyWasteInputSchema = {
+  contractId: z.string().trim().min(1).optional(),
+  contact: contactSchema.optional(),
+  pickupAddress: addressSchema.optional(),
+  earliestPickupDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  items: z.array(bulkyWasteItemSchema).min(1),
+  placement: z.string().trim().min(1).optional(),
+  note: z.string().trim().min(1).optional(),
+  allotmentReference: z.string().trim().min(1).optional()
+};
+
+const reportLocationSchema = z.union([
+  z.object({
+    address: z.string().trim().min(4)
+  }).strict(),
+  z.object({
+    latitude: z.number().finite().min(-90).max(90),
+    longitude: z.number().finite().min(-180).max(180),
+    label: z.string().trim().min(1).optional()
+  }).strict()
+]);
+
+const abandonedWasteInputSchema = {
+  contractId: z.string().trim().min(1).optional(),
+  contact: contactSchema.optional(),
+  location: reportLocationSchema.optional(),
+  description: z.string().trim().min(1).max(500),
+  photoPaths: z.array(z.string().trim().min(1)).min(1).max(3),
+  privacyConsent: z.literal(true)
+};
+
+const confirmationInputSchema = {
+  confirmationId: z.uuid()
+};
 
 function mergeAttachmentFilePath(values: Record<string, unknown> | undefined, attachmentFilePath: string | undefined): Record<string, unknown> {
   return attachmentFilePath ? { ...(values ?? {}), attachmentFilePath } : values ?? {};
@@ -253,7 +382,20 @@ function jsonToolResult(value: unknown) {
 export function toolErrorResult(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   const code = error instanceof PortalError ? error.code : "UNKNOWN";
-  const structuredContent = { ok: false, code, message };
+  const details = error instanceof PortalError ? error.details : undefined;
+  const structuredContent = redactSecrets({
+    ok: false,
+    code,
+    message,
+    ...(details?.outcomeUncertain ? { outcomeUncertain: true } : {}),
+    ...(details?.warnings ? { warnings: details.warnings } : {})
+  }) as {
+    ok: false;
+    code: string;
+    message: string;
+    outcomeUncertain?: boolean;
+    warnings?: string[];
+  };
   return {
     isError: true,
     content: [

@@ -470,7 +470,7 @@ export class PortalClient {
     }
   }
 
-  async discoverWriteActions(): Promise<PortalActionMap> {
+  async discoverWriteActions(options: { persistArtifact?: boolean } = {}): Promise<PortalActionMap> {
     const config = await loadConfig();
     const session = await this.authenticatedSession(config);
     const status = await this.validateSession(config, session);
@@ -573,13 +573,26 @@ export class PortalClient {
       artifactPath: ""
     };
 
-    await mkdir(paths.tracesDir, { recursive: true });
-    const artifactPath = path.join(paths.tracesDir, `write-actions-${Date.now()}.json`);
-    const redactedReport = redactSecrets({ ...report, artifactPath }) as PortalActionMap;
-    await writeFile(artifactPath, `${JSON.stringify(redactedReport, null, 2)}\n`, "utf8");
+    let redactedReport: PortalActionMap;
+    if (options.persistArtifact === false) {
+      redactedReport = redactSecrets(report) as PortalActionMap;
+    } else {
+      await mkdir(paths.tracesDir, { recursive: true });
+      const artifactPath = path.join(paths.tracesDir, `write-actions-${Date.now()}.json`);
+      redactedReport = redactSecrets({ ...report, artifactPath }) as PortalActionMap;
+      await writeFile(artifactPath, `${JSON.stringify(redactedReport, null, 2)}\n`, "utf8");
+    }
     await saveSession(session.serialize());
     this.actionCache = { items: redactedReport.actions, source: "boxlist" };
     return redactedReport;
+  }
+
+  async listPortalActionsForDefaults(): Promise<ListResult<PortalAction>> {
+    if (this.actionCache) {
+      return this.actionCache;
+    }
+    const report = await this.discoverWriteActions({ persistArtifact: false });
+    return { items: report.actions, source: "boxlist" };
   }
 
   async listPortalActions(filter: {

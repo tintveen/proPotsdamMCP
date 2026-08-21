@@ -26,3 +26,13 @@ By default, the password is stored in the macOS Keychain under the `propotsdam-m
 ```
 
 Remove or redact this data before sharing logs, traces, test fixtures, or issue details.
+
+## External Waste Services
+
+STEP pickup requests transmit contact details, the contact and pickup addresses, item details, and scheduling notes to Stadtentsorgung Potsdam. Potsdam abandoned-waste reports transmit coordinates, a description, contact details, and one to three photos; report locations, descriptions, and photos may later be visible publicly.
+
+External form sessions use separate, origin-pinned cookie jars. Easysquare cookies, CSRF values, credentials, and headers must never be forwarded to STEP, Potsdam, or the geocoding service. Hidden external form values and raw response bodies must not be logged or returned through MCP.
+
+External writes require a one-time confirmation id that expires after ten minutes. Abandoned-waste photos are decoded with resource limits, auto-oriented, resized when needed, and re-encoded as metadata-free JPEG. The exact normalized files are kept with private filesystem permissions only for the confirmation lifetime and removed after expiry or a commit attempt.
+
+If an external write has an ambiguous network outcome, the confirmation remains consumed and the client does not retry automatically. Check for the STEP response or Potsdam activation email before creating a replacement request.

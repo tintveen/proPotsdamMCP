@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -334,6 +334,17 @@ describe("PortalClient HTTP flow", () => {
     expect(artifact).not.toContain("sid=abc");
     expect(artifact).not.toContain("csrf-token");
     expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
+  });
+
+  it("resolves portal actions for contact defaults without persisting a PII-bearing trace", async () => {
+    const { client, tempDir } = await createMockClient({
+      loggedServicesBody: servicesWithProfileDetail()
+    });
+
+    const actions = await client.listPortalActionsForDefaults();
+
+    expect(actions.items.some((action) => action.id === "save_partner")).toBe(true);
+    expect(await readdir(path.join(tempDir, "traces"))).toEqual([]);
   });
 
   it("lists every missing write capability as draft-only and prepares without live writes", async () => {
