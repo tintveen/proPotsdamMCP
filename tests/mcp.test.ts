@@ -4,11 +4,16 @@ import { PortalClient } from "../src/portal/portal-client.js";
 import type { WasteServiceLike } from "../src/waste/types.js";
 
 describe("MCP server", () => {
-  it("registers the data-only ProPotsdam tool surface", () => {
+  it("registers the conversational pending-write tool surface", () => {
     const server = createServer();
     const inspected = server as unknown as {
-      _registeredTools: Record<string, { title?: string; description?: string; inputSchema?: { safeParse: (value: unknown) => { success: boolean } } }>;
-      server: { _serverInfo: { name: string } };
+      _registeredTools: Record<string, {
+        title?: string;
+        description?: string;
+        inputSchema?: { safeParse: (value: unknown) => { success: boolean } };
+        annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint?: boolean };
+      }>;
+      server: { _serverInfo: { name: string; version: string } };
     };
     const tools = inspected._registeredTools;
 
@@ -17,9 +22,10 @@ describe("MCP server", () => {
       "propotsdam_auth_login",
       "propotsdam_auth_logout",
       "propotsdam_auth_status",
+      "propotsdam_cancel_pending_writes",
       "propotsdam_commit_abandoned_waste_report",
       "propotsdam_commit_bulky_waste_pickup",
-      "propotsdam_commit_portal_action",
+      "propotsdam_commit_pending_writes",
       "propotsdam_discover_capabilities",
       "propotsdam_discover_write_actions",
       "propotsdam_export_portal_file",
@@ -31,14 +37,15 @@ describe("MCP server", () => {
       "propotsdam_list_portal_files",
       "propotsdam_list_portal_actions",
       "propotsdam_list_portal_write_capabilities",
+      "propotsdam_list_pending_writes",
       "propotsdam_list_structured_portal_records",
-      "propotsdam_prepare_portal_action",
-      "propotsdam_prepare_portal_write",
       "propotsdam_prepare_abandoned_waste_report",
       "propotsdam_prepare_bulky_waste_pickup",
+      "propotsdam_prepare_portal_action",
+      "propotsdam_prepare_portal_write",
       "propotsdam_request_abandoned_waste_report_commit",
       "propotsdam_request_bulky_waste_pickup_commit",
-      "propotsdam_request_portal_action_commit",
+      "propotsdam_stage_portal_action",
       "propotsdam_list_portal_records"
     ].sort());
     expect(tools.propotsdam_get_portal_record?.title).toBe("proPotsdam get portal record");
@@ -46,8 +53,9 @@ describe("MCP server", () => {
       expect.arrayContaining(["proPotsdam auth status", "proPotsdam list portal records"])
     );
     expect(Object.values(tools).every((tool) => tool.title?.startsWith("proPotsdam "))).toBe(true);
-    expect(Object.keys(tools).join(" ")).not.toMatch(/submit|reply|acknowledge/i);
-    expect(Object.values(tools).map((tool) => tool.description ?? "").join(" ")).not.toMatch(/submit|reply|acknowledge/i);
+    expect(inspected.server._serverInfo.version).toBe("0.2.0");
+    expect(tools.propotsdam_request_portal_action_commit).toBeUndefined();
+    expect(tools.propotsdam_commit_portal_action).toBeUndefined();
 
     const listRecordsTool = tools.propotsdam_list_portal_records!;
     expect(listRecordsTool).toBeDefined();
@@ -87,14 +95,30 @@ describe("MCP server", () => {
     expect(prepareTool.inputSchema?.safeParse({ id: "A-1", values: { description: "x" }, attachmentFilePath: "/tmp/photo.jpg" }).success).toBe(true);
     expect(prepareTool.inputSchema?.safeParse({ id: "" }).success).toBe(false);
 
-    const requestCommitTool = tools.propotsdam_request_portal_action_commit!;
-    expect(requestCommitTool.inputSchema?.safeParse({ actionId: "save_partner", values: { phone_ref: "x" } }).success).toBe(true);
-    expect(requestCommitTool.inputSchema?.safeParse({ actionId: "cmdsend", recordId: "DMG-1", serviceId: "SRV-1", values: { msg_txt: "x" }, attachmentFilePath: "/tmp/photo.jpg" }).success).toBe(true);
-    expect(requestCommitTool.inputSchema?.safeParse({ actionId: "" }).success).toBe(false);
+    const stageTool = tools.propotsdam_stage_portal_action!;
+    expect(stageTool.inputSchema?.safeParse({ actionId: "save_partner", values: { phone_ref: "x" } }).success).toBe(true);
+    expect(stageTool.inputSchema?.safeParse({ actionId: "cmdsend", recordId: "DMG-1", serviceId: "SRV-1", values: { msg_txt: "x" }, attachmentFilePath: "/tmp/photo.jpg" }).success).toBe(true);
+    expect(stageTool.inputSchema?.safeParse({ actionId: "" }).success).toBe(false);
 
-    const commitTool = tools.propotsdam_commit_portal_action!;
-    expect(commitTool.inputSchema?.safeParse({ confirmationId: "confirmation-id" }).success).toBe(true);
-    expect(commitTool.inputSchema?.safeParse({ confirmationId: "" }).success).toBe(false);
+    const listPendingTool = tools.propotsdam_list_pending_writes!;
+    expect(listPendingTool).toBeDefined();
+
+    const cancelTool = tools.propotsdam_cancel_pending_writes!;
+    expect(cancelTool.inputSchema?.safeParse({ pendingWriteHandles: ["pending-1"] }).success).toBe(true);
+    expect(cancelTool.inputSchema?.safeParse({ pendingWriteHandles: [] }).success).toBe(false);
+
+    const commitTool = tools.propotsdam_commit_pending_writes!;
+    expect(commitTool.inputSchema?.safeParse({ pendingWriteHandles: ["pending-1", "pending-2"] }).success).toBe(true);
+    expect(commitTool.inputSchema?.safeParse({
+      pendingWriteHandles: Array.from({ length: 100 }, (_, index) => `pending-${index + 1}`)
+    }).success).toBe(true);
+    expect(commitTool.inputSchema?.safeParse({ pendingWriteHandles: [] }).success).toBe(false);
+    expect(commitTool.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true
+    });
 
     const prepareBulkyWasteTool = tools.propotsdam_prepare_bulky_waste_pickup!;
     expect(prepareBulkyWasteTool.inputSchema?.safeParse({
@@ -168,5 +192,54 @@ describe("MCP server", () => {
     const committed = await server._registeredTools.propotsdam_commit_abandoned_waste_report!.handler({ confirmationId: "confirmation-1" });
     expect(wasteService.commitAbandonedWasteReport).toHaveBeenCalledWith("confirmation-1");
     expect(committed.structuredContent).toMatchObject({ state: "awaiting_email_confirmation" });
+  });
+
+  it("keeps pending-write handles in structured tool data but out of human text", async () => {
+    const client = {
+      stagePortalAction: async () => ({
+        ok: true,
+        actionId: "save_partner",
+        actionTitle: "Speichern",
+        pendingWriteHandle: "opaque-pending-1",
+        expiresAt: "2026-08-28T12:10:00.000Z",
+        requiresExplicitApproval: true,
+        summary: "Staged.",
+        validationIssues: [],
+        diff: [{ name: "phone_ref", currentValue: "+491", proposedValue: "+492" }]
+      })
+    } as unknown as PortalClient;
+    const server = createServer(client) as unknown as {
+      _registeredTools: Record<string, { handler: (args: unknown, extra: unknown) => Promise<unknown> }>;
+    };
+
+    const result = await server._registeredTools.propotsdam_stage_portal_action!.handler({
+      actionId: "save_partner",
+      values: { phone_ref: "+492" }
+    }, {}) as {
+      content: Array<{ type: string; text: string }>;
+      structuredContent: Record<string, unknown>;
+    };
+
+    expect(result.structuredContent.pendingWriteHandle).toBe("opaque-pending-1");
+    expect(result.content[0]!.text).not.toContain("opaque-pending-1");
+    expect(result.content[0]!.text).not.toContain("pendingWriteHandle");
+    expect(result.content[0]!.text).toContain("phone_ref");
+  });
+
+  it("documents conservative English/German approval orchestration and the LLM trust boundary", () => {
+    const server = createServer() as unknown as {
+      _registeredTools: Record<string, { description?: string }>;
+    };
+    const stageDescription = server._registeredTools.propotsdam_stage_portal_action!.description!;
+    const commitDescription = server._registeredTools.propotsdam_commit_pending_writes!.description!;
+
+    expect(stageDescription).toMatch(/stop.*wait for a new user message/i);
+    expect(stageDescription).toContain("yes, send it");
+    expect(stageDescription).toContain("ja, abschicken");
+    expect(stageDescription).toMatch(/Okay.*insufficient/i);
+    expect(stageDescription).toMatch(/change.*newly staged/i);
+    expect(commitDescription).toMatch(/named subset.*entire displayed batch/i);
+    expect(commitDescription).toMatch(/LLM is the approval trust boundary/i);
+    expect(commitDescription).toMatch(/cannot inspect the conversation/i);
   });
 });

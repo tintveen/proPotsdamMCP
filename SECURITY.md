@@ -19,13 +19,15 @@ This project is pre-1.0. Security fixes are handled on the current mainline vers
 
 ## Local Sensitive Data
 
-By default, the password is stored in the macOS Keychain under the `propotsdam-mcp` service. Local config, session cookies, traces, confirmations, and exports live under:
+By default, the password is stored in the macOS Keychain under the `propotsdam-mcp` service. Local config, session cookies, traces, pending writes, temporary staged attachments, and exports live under:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/
 ```
 
 Remove or redact this data before sharing logs, traces, test fixtures, or issue details.
+
+Pending ProPotsdam writes expire after ten minutes and are integrity-bound to the reviewed account, target, values, form contract, and attachment hashes. Ordinary transport methods reject portal action writes; a successfully claimed pending write is required to issue the internal permit accepted by the write transport. The LLM or MCP host—not the MCP server—is responsible for waiting for explicit conversational approval before calling the destructive commit tool. Tool annotations are advisory and do not independently enforce consent. Once a state-changing request may have been dispatched, the server consumes the pending write and never retries it automatically.
 
 ## External Waste Services
 

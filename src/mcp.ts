@@ -58,7 +58,7 @@ export function createServer(
 ): McpServer {
   const server = new McpServer({
     name: "proPotsdam MCP",
-    version: "0.1.0"
+    version: "0.2.0"
   });
 
   registerJsonTool(server, "propotsdam_auth_status", {
@@ -158,7 +158,7 @@ export function createServer(
   }), async ({ id }) => wrapTool(() => client.getPortalAction(id)));
 
   server.registerTool("propotsdam_list_portal_write_capabilities", withToolTitle("propotsdam_list_portal_write_capabilities", {
-    description: "List draft-only ProPotsdam portal write capabilities without sending portal changes.",
+    description: "List ProPotsdam portal write capabilities and their draft-only or conversational-approval execution policy without sending portal changes.",
     inputSchema: {
       domain: z.enum(WRITE_DOMAIN_VALUES).optional(),
       serviceId: z.string().min(1).optional(),
@@ -191,8 +191,8 @@ export function createServer(
     client.preparePortalAction(id, mergeAttachmentFilePath(values, attachmentFilePath))
   ));
 
-  server.registerTool("propotsdam_request_portal_action_commit", withToolTitle("propotsdam_request_portal_action_commit", {
-    description: "Create a short-lived confirmation for committing a supported ProPotsdam portal action.",
+  server.registerTool("propotsdam_stage_portal_action", withToolTitle("propotsdam_stage_portal_action", {
+    description: "Stage an immutable pending portal write without changing ProPotsdam. Show the exact returned diff, stop, and wait for a new user message. Explicit instructions such as 'yes, send it' or 'ja, abschicken' can approve it. 'Okay', 'looks good', or an emoji is insufficient; 'yes, but change...' requires a newly staged and displayed draft.",
     inputSchema: {
       actionId: z.string().min(1),
       recordId: z.string().min(1).optional(),
@@ -201,15 +201,39 @@ export function createServer(
       values: z.record(z.string(), z.unknown()).optional()
     }
   }), async ({ actionId, recordId, serviceId, values, attachmentFilePath }) => wrapTool(() =>
-    client.requestPortalActionCommit(actionId, mergeAttachmentFilePath(values, attachmentFilePath), { recordId, serviceId })
+    client.stagePortalAction(actionId, mergeAttachmentFilePath(values, attachmentFilePath), { recordId, serviceId }),
+    { hidePendingWriteHandles: true }
   ));
 
-  server.registerTool("propotsdam_commit_portal_action", withToolTitle("propotsdam_commit_portal_action", {
-    description: "Commit a previously confirmed ProPotsdam portal action by confirmation id.",
+  registerJsonTool(server, "propotsdam_list_pending_writes", {
+    description: "List safe summaries of active pending writes for LLM/tool coordination. Internal handles are structured data and must not be shown to users."
+  }, async () => client.listPendingWrites(), { hidePendingWriteHandles: true });
+
+  server.registerTool("propotsdam_cancel_pending_writes", withToolTitle("propotsdam_cancel_pending_writes", {
+    description: "Cancel selected pending writes locally without contacting ProPotsdam.",
     inputSchema: {
-      confirmationId: z.string().min(1)
+      pendingWriteHandles: z.array(z.string().min(1)).min(1)
     }
-  }), async ({ confirmationId }) => wrapTool(() => client.commitPortalAction(confirmationId)));
+  }), async ({ pendingWriteHandles }) => wrapTool(
+    () => client.cancelPendingWrites(pendingWriteHandles),
+    { hidePendingWriteHandles: true }
+  ));
+
+  server.registerTool("propotsdam_commit_pending_writes", withToolTitle("propotsdam_commit_pending_writes", {
+    description: "Perform one or more staged portal writes only after the user explicitly approved the exact displayed draft, named subset, or entire displayed batch in a new natural-language message. The LLM is the approval trust boundary; this server cannot inspect the conversation. Every supplied item runs independently even after failure and must never be retried automatically after dispatch.",
+    inputSchema: {
+      pendingWriteHandles: z.array(z.string().min(1)).min(1)
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true
+    }
+  }), async ({ pendingWriteHandles }) => wrapTool(
+    () => client.commitPendingWrites(pendingWriteHandles),
+    { hidePendingWriteHandles: true }
+  ));
 
   server.registerTool("propotsdam_prepare_bulky_waste_pickup", withToolTitle("propotsdam_prepare_bulky_waste_pickup", {
     description: "Preview a STEP bulky-waste pickup request without creating a pickup request.",
@@ -346,9 +370,10 @@ function registerJsonTool<T>(
   server: McpServer,
   name: string,
   config: { description: string },
-  handler: () => Promise<T>
+  handler: () => Promise<T>,
+  options: ToolResultOptions = {}
 ): void {
-  server.registerTool(name, withToolTitle(name, config), async () => wrapTool(handler));
+  server.registerTool(name, withToolTitle(name, config), async () => wrapTool(handler, options));
 }
 
 function withToolTitle<T extends { description: string }>(name: string, config: T): T & { title: string } {
@@ -358,25 +383,46 @@ function withToolTitle<T extends { description: string }>(name: string, config: 
   };
 }
 
-async function wrapTool<T>(handler: () => Promise<T>) {
+interface ToolResultOptions {
+  hidePendingWriteHandles?: boolean;
+}
+
+async function wrapTool<T>(handler: () => Promise<T>, options: ToolResultOptions = {}) {
   try {
-    return jsonToolResult(await handler());
+    return jsonToolResult(await handler(), options);
   } catch (error) {
     return toolErrorResult(error);
   }
 }
 
-function jsonToolResult(value: unknown) {
+function jsonToolResult(value: unknown, options: ToolResultOptions = {}) {
   const structuredContent = redactSecrets(value) as Record<string, unknown>;
+  const humanContent = options.hidePendingWriteHandles
+    ? omitPendingWriteHandles(structuredContent)
+    : structuredContent;
   return {
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify(structuredContent, null, 2)
+        text: JSON.stringify(humanContent, null, 2)
       }
     ],
     structuredContent
   };
+}
+
+function omitPendingWriteHandles(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(omitPendingWriteHandles);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !key.toLowerCase().includes("handle"))
+        .map(([key, entry]) => [key, omitPendingWriteHandles(entry)])
+    );
+  }
+  return value;
 }
 
 export function toolErrorResult(error: unknown) {

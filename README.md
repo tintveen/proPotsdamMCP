@@ -4,7 +4,7 @@
 
 Unofficial local MCP server for the ProPotsdam/Easysquare customer portal, STEP bulky-waste pickup, and Potsdam abandoned-waste reports.
 
-It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Limited write support is guarded by an explicit confirmation flow and should be treated as experimental.
+It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Limited write support uses an explicit conversational approval flow and should be treated as experimental.
 
 [![CI](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml)
 
@@ -33,7 +33,7 @@ npx -y propotsdam-cli auth set
 
 Requirements: Node.js 22+, npm/npx, macOS Keychain, and a ProPotsdam/Easysquare account.
 
-For the normal ProPotsdam portal, credential setup does not need a base URL. Local config, session cookies, traces, confirmations, short-lived normalized report photos, and MCP-created exports live under:
+For the normal ProPotsdam portal, credential setup does not need a base URL. Local config, session cookies, traces, external-workflow confirmations, short-lived normalized report photos, ProPotsdam pending writes and temporary staged attachments, and MCP-created exports live under:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/
@@ -56,17 +56,18 @@ npx -y propotsdam-cli records raw get REC-1 --json
 npx -y propotsdam-cli files export REC-1 --output-dir /tmp/propotsdam-exports
 npx -y propotsdam-cli actions list --kind form
 npx -y propotsdam-cli actions prepare DMG-NEW --value description="Heizung bleibt kalt"
-npx -y propotsdam-cli actions request-commit cmdsend --attachment-file ./schaden.jpg --value msg_txt="Deckel defekt" --value TOPIC_IW_...="Abfallbehälter"
-npx -y propotsdam-cli actions request-commit save_partner --value phone_ref="+491234567"
-npx -y propotsdam-cli actions commit <confirmation-id>
+npx -y propotsdam-cli actions send cmdsend --attachment-file ./schaden.jpg --value msg_txt="Deckel defekt" --value TOPIC_IW_...="Abfallbehälter"
+npx -y propotsdam-cli actions send save_partner --value phone_ref="+491234567"
 npx -y propotsdam-cli writes list --domain repair_report
 ```
 
 Human output uses compact tables for lists and readable detail sections for single records. Add `--json` to get redacted machine-readable output using the underlying client result shape, for example `{ "items": [...], "source": "boxlist" }`.
 
-TTY sessions can guide missing ids and write fields with prompts. Non-interactive runs never prompt; pass ids and values explicitly with `--value key=value`, `--values-json '{"key":"value"}'`, or `--values-file values.json`. For repair photos, pass a local JPEG/PNG path with `--attachment-file <path>`; the client only commits it when the portal form exposes a supported upload endpoint, otherwise the commit request is rejected before any portal write.
+TTY sessions can guide missing ids and write fields with prompts. Non-interactive prepare-only runs never prompt; pass ids and values explicitly with `--value key=value`, `--values-json '{"key":"value"}'`, or `--values-file values.json`. `actions send` is deliberately interactive: it stages the immutable write, displays the exact diff, asks `Send this exact change to ProPotsdam? [y/N]`, commits on yes, and cancels on no. It refuses non-TTY use and provides no `--yes` bypass. For repair photos, pass a local JPEG/PNG path with `--attachment-file <path>`; the client stages a private hashed copy only when the portal form exposes a supported upload endpoint.
 
-Live commits are intentionally limited. This version can commit only supported `Meine Daten`/`save_partner` profile changes and detail-based `Reparatur`/`cmdsend` damage reports after a short-lived confirmation id is created; all other write domains remain draft-only.
+Live commits are intentionally limited. This version can commit only exact `Meine Daten`/`save_partner` profile changes and detail-based `Reparatur`/`cmdsend` damage reports. MCP clients first stage a ten-minute immutable pending write, show its exact diff, stop, and wait for a new user message. The user can then approve naturally—for example, “yes, send it” or “ja, abschicken”—without seeing or copying an internal handle. Ambiguous assent such as “looks good” is not approval, and changed instructions require a newly staged diff.
+
+The LLM or MCP host is the conversational approval trust boundary: the server cannot inspect the chat or independently prove that approval occurred. There is no global write-enable switch. The server still binds the approved draft to the account, target, form contract, fields, and attachment hashes; atomically consumes it once; and does not retry after an uncertain dispatch. MCP destructive/read-only annotations are advisory hints, not authorization enforcement. All other discovered write domains remain draft-only until their exact portal contracts pass the release gate in [the write-safety PRD](docs/prd-safe-write-coverage.md).
 
 ## Bulky and abandoned waste
 
@@ -109,8 +110,10 @@ German aliases are available for common groups:
 - `propotsdam_list_portal_write_capabilities`
 - `propotsdam_prepare_portal_write`
 - `propotsdam_prepare_portal_action`
-- `propotsdam_request_portal_action_commit`
-- `propotsdam_commit_portal_action`
+- `propotsdam_stage_portal_action`
+- `propotsdam_list_pending_writes`
+- `propotsdam_cancel_pending_writes`
+- `propotsdam_commit_pending_writes`
 - `propotsdam_prepare_bulky_waste_pickup`
 - `propotsdam_request_bulky_waste_pickup_commit`
 - `propotsdam_commit_bulky_waste_pickup`
@@ -121,7 +124,7 @@ German aliases are available for common groups:
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run build
 npm run auth:set
 node dist/cli.js serve

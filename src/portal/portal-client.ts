@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   API5_SERVICES_PATH,
@@ -11,19 +11,27 @@ import type { CredentialStore } from "../credentials.js";
 import { EnvironmentCredentialStore, KeytarCredentialStore } from "../credentials.js";
 import { PortalError } from "../errors.js";
 import { CookieSession } from "../http/cookie-session.js";
+import type { PortalWritePermit } from "../http/write-permit.js";
+import { closePortalWritePermit, issuePortalWritePermit } from "../http/write-permit.js";
 import {
+  claimPendingWrite,
+  deleteClaimedPendingWrite,
+  deletePendingWrite,
+  deletePendingWriteArtifacts,
   deleteSession,
-  deleteConfirmation,
-  loadConfirmation,
+  listPendingWrites as listStoredPendingWrites,
+  loadPendingWrite,
   loadConfig,
   loadSession,
   paths,
+  pendingWriteArtifactsDir,
   saveConfig,
-  saveConfirmation,
+  savePendingWrite,
   saveSession
 } from "../storage.js";
 import type {
   AuthResult,
+  CancelPendingWritesResult,
   CapabilityMap,
   DocumentItem,
   InboxItem,
@@ -33,19 +41,25 @@ import type {
   PortalConfig,
   PortalAction,
   PortalActionField,
-  PortalActionCommitRequest,
+  PortalActionDiffEntry,
   PortalActionCommitTarget,
   PortalActionMap,
   PreparedPortalAttachment,
+  PortalAttachmentReview,
+  PortalCommitBatchResult,
   PortalCommitResult,
   PortalRecordItem,
   PortalReadDomain,
   PortalSection,
   PortalWriteCapability,
   PortalWriteDomain,
+  PendingPortalWrite,
+  PendingPortalWriteList,
+  PendingPortalWriteSummary,
   PreparedPortalAction,
   PreparedPortalWrite,
-  StoredPortalActionConfirmation,
+  StagedPortalActionResult,
+  StagedPortalAttachment,
   StructuredPortalRecord
 } from "../types.js";
 import { redactSecrets } from "../utils/redact.js";
@@ -215,7 +229,7 @@ const WRITE_DOMAIN_SPECS: Record<PortalWriteDomain, {
 
 export class PortalClient {
   private static readonly detailActionScanLimit = 250;
-  private static readonly confirmationTtlMs = 10 * 60 * 1000;
+  private static readonly pendingWriteTtlMs = 10 * 60 * 1000;
   private readonly listCache = new Map<PortalSection, ListResult<InboxItem | DocumentItem | PortalRecordItem>>();
   private actionCache?: ListResult<PortalAction>;
 
@@ -557,7 +571,7 @@ export class PortalClient {
     const report: PortalActionMap = {
       generatedAt: new Date().toISOString(),
       authenticated: status.authenticated,
-      actionPolicy: "Prepare-only. This MCP maps ProPotsdam portal actions and builds reviewable drafts, but does not send state-changing requests.",
+      actionPolicy: "Discovery is read-only. Exact allowlisted actions may be staged, but live commit requires explicit conversational approval of the displayed immutable diff in a new user message.",
       userId: status.userId,
       userFullName: status.userFullName,
       services: serviceSummaries,
@@ -836,11 +850,11 @@ export class PortalClient {
     }) as PreparedPortalAction;
   }
 
-  async requestPortalActionCommit(
+  async stagePortalAction(
     actionId: string,
     values: Record<string, unknown> = {},
     target: PortalActionCommitTarget = {}
-  ): Promise<PortalActionCommitRequest> {
+  ): Promise<StagedPortalActionResult> {
     const resolved = await this.resolveCommitAction(actionId, target);
     const validationIssues = [...resolved.validationIssues];
     const action = resolved.action;
@@ -849,8 +863,9 @@ export class PortalClient {
         ok: false,
         actionId,
         actionTitle: undefined,
-        confirmationId: undefined,
-        summary: `Commit request for '${actionId}' was not created.`,
+        pendingWriteHandle: undefined,
+        requiresExplicitApproval: false,
+        summary: `Pending write for '${actionId}' was not staged.`,
         validationIssues,
         diff: []
       };
@@ -884,161 +899,370 @@ export class PortalClient {
         ok: false,
         actionId: action.id,
         actionTitle: action.title,
-        confirmationId: undefined,
-        summary: `Commit request for '${action.title}' was not created.`,
+        pendingWriteHandle: undefined,
+        requiresExplicitApproval: false,
+        summary: `Pending write for '${action.title}' was not staged.`,
         validationIssues,
         diff
       };
     }
 
-    const confirmationId = randomUUID();
+    const config = await loadConfig();
+    const session = await this.authenticatedSession(config);
+    const status = await this.validateSession(config, session);
+    const accountId = portalAccountBinding(config, status);
+    if (!accountId) {
+      return {
+        ok: false,
+        actionId: action.id,
+        actionTitle: action.title,
+        requiresExplicitApproval: false,
+        summary: `Pending write for '${action.title}' was not staged.`,
+        validationIssues: ["The authenticated portal account could not be bound to this draft."],
+        diff
+      };
+    }
+
+    const pendingWriteHandle = randomUUID();
     const createdAt = new Date();
-    const expiresAt = new Date(createdAt.getTime() + PortalClient.confirmationTtlMs);
-    const confirmation: StoredPortalActionConfirmation = {
-      confirmationId,
+    const expiresAt = new Date(createdAt.getTime() + PortalClient.pendingWriteTtlMs);
+    let stagedAttachments: StagedPortalAttachment[] = [];
+    try {
+      stagedAttachments = await stagePendingAttachments(pendingWriteHandle, attachments);
+    } catch (error) {
+      await deletePendingWriteArtifacts(pendingWriteHandle);
+      throw error;
+    }
+    const pendingWrite: PendingPortalWrite = {
+      pendingWriteHandle,
+      state: "staged",
+      accountId,
+      domain: classifyWriteDomain(action),
       actionId: action.id,
       actionTitle: action.title,
       recordId: action.recordId,
       recordTitle: action.recordTitle,
       serviceId: action.serviceId,
+      serviceTitle: action.serviceTitle,
       xuclass: action.xuclass,
       serviceUrl: action.serviceUrl,
+      contractFingerprint: actionContractFingerprint(action),
       values: Object.fromEntries(fieldDiff.map((entry) => [entry.name, entry.proposedValue])),
       diff,
-      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString()
     };
-    await saveConfirmation(confirmation);
+    let pendingWriteSaved = false;
+    try {
+      await savePendingWrite(pendingWrite);
+      pendingWriteSaved = true;
+      await saveSession(session.serialize());
+    } catch (error) {
+      if (pendingWriteSaved) {
+        await deletePendingWrite(pendingWriteHandle).catch(() => false);
+      } else {
+        await deletePendingWriteArtifacts(pendingWriteHandle);
+      }
+      throw error;
+    }
     return {
       ok: true,
       actionId: action.id,
       actionTitle: action.title,
-      confirmationId,
-      expiresAt: confirmation.expiresAt,
-      summary: `Ready to commit '${action.title}' for ${action.recordTitle ?? action.serviceTitle}. Ask the user to confirm this exact diff before committing.`,
+      pendingWriteHandle,
+      expiresAt: pendingWrite.expiresAt,
+      requiresExplicitApproval: true,
+      target: pendingWriteTargetReview(pendingWrite),
+      summary: `Staged '${action.title}' for ${action.recordTitle ?? action.serviceTitle}. Show the exact diff, stop, and wait for a new message with explicit approval before committing.`,
       validationIssues: [],
       diff,
-      ...(attachments.length > 0 ? { attachments } : {})
+      ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments.map(attachmentReview) } : {})
     };
   }
 
-  async commitPortalAction(confirmationId: string): Promise<PortalCommitResult> {
-    const confirmation = await loadConfirmation(confirmationId);
-    if (!confirmation) {
-      throw new PortalError(`Confirmation '${confirmationId}' was not found.`, "CONFIRMATION_NOT_FOUND", 404);
-    }
-    if (Date.parse(confirmation.expiresAt) <= Date.now()) {
-      await deleteConfirmation(confirmationId);
-      throw new PortalError(`Confirmation '${confirmationId}' has expired.`, "CONFIRMATION_EXPIRED", 410);
-    }
+  async listPendingWrites(): Promise<PendingPortalWriteList> {
+    const items = await listStoredPendingWrites();
+    return { items: items.map(pendingWriteSummary) };
+  }
 
-    let resolved: { action?: PortalAction; validationIssues: string[] };
-    try {
-      resolved = await this.resolveCommitAction(confirmation.actionId, {
-        recordId: confirmation.recordId,
-        serviceId: confirmation.serviceId
-      });
-    } catch (error) {
-      await deleteConfirmation(confirmationId);
-      throw error;
-    }
-    const action = resolved.action;
-    const scopeIssues = [
-      ...resolved.validationIssues,
-      ...(action ? this.commitScopeIssues(action) : [])
-    ];
-    if (scopeIssues.length > 0) {
-      await deleteConfirmation(confirmationId);
-      throw new PortalError(scopeIssues.join(" "), "ACTION_COMMIT_NOT_ALLOWED", 403);
-    }
-    if (!action) {
-      await deleteConfirmation(confirmationId);
-      throw new PortalError(`Portal action '${confirmation.actionId}' was not found.`, "ACTION_COMMIT_NOT_ALLOWED", 403);
-    }
-
-    const config = await loadConfig();
-    const session = await this.authenticatedSession(config);
-    const sourceRecordId = action.recordId ?? confirmation.recordId ?? action.id;
-    const sourceFormUrl = this.buildActionUrl(config, action.serviceUrl, sourceRecordId, "get");
-    if (!sourceFormUrl) {
-      throw new PortalError("Portal action has no commit endpoint.", "ACTION_COMMIT_NOT_ALLOWED", 403);
-    }
-    const sourceForm = await session.get(sourceFormUrl);
-    if (!sourceForm.ok) {
-      throw new PortalError(`Portal form '${sourceRecordId}' could not be loaded for commit.`, "ACTION_COMMIT_NOT_ALLOWED", sourceForm.status);
-    }
-
-    const newRecordId = randomUUID().toUpperCase();
-    const { xml, originalId } = this.buildCommitFormXml(sourceForm.body, action, confirmation.values, newRecordId, sourceRecordId, config);
-    const saveUrl = this.buildActionUrl(config, action.serviceUrl, newRecordId, "save", {
-      originalId,
-      resourceOrigin: "form"
-    });
-    if (!saveUrl) {
-      throw new PortalError("Portal action has no save endpoint.", "ACTION_COMMIT_NOT_ALLOWED", 403);
-    }
-    const saveResponse = await session.post(saveUrl, xml, {
-      headers: {
-        "content-type": "application/xml;charset=UTF-8"
+  async cancelPendingWrites(pendingWriteHandles: string[]): Promise<CancelPendingWritesResult> {
+    const cancelledHandles: string[] = [];
+    const missingHandles: string[] = [];
+    for (const pendingWriteHandle of [...new Set(pendingWriteHandles)]) {
+      if (await deletePendingWrite(pendingWriteHandle).catch(() => false)) {
+        cancelledHandles.push(pendingWriteHandle);
+      } else {
+        missingHandles.push(pendingWriteHandle);
       }
-    });
-    if (!saveResponse.ok) {
-      await saveSession(session.serialize());
-      await deleteConfirmation(confirmationId);
-      return {
-        ok: false,
-        actionId: confirmation.actionId,
-        committedAt: new Date().toISOString(),
-        status: saveResponse.status,
-        summary: `Portal returned HTTP ${saveResponse.status} while saving '${confirmation.actionTitle}'.`,
-        portalMessage: normalizeDetailText(saveResponse.body, saveResponse.contentType) || undefined
-      };
     }
-
-    const attachmentUploads = await this.uploadConfirmedAttachments(
-      config,
-      session,
-      confirmation.attachments ?? [],
-      newRecordId,
-      originalId
-    );
-    if (attachmentUploads.some((upload) => !upload.ok)) {
-      await saveSession(session.serialize());
-      await deleteConfirmation(confirmationId);
-      const failed = attachmentUploads.find((upload) => !upload.ok)!;
-      return {
-        ok: false,
-        actionId: confirmation.actionId,
-        recordId: newRecordId,
-        committedAt: new Date().toISOString(),
-        status: failed.status,
-        summary: `Portal returned HTTP ${failed.status} while uploading attachment '${failed.filename}'.`,
-        attachmentUploads
-      };
-    }
-
-    const commitUrl = this.buildActionUrl(config, action.serviceUrl, newRecordId, action.id, { originalId });
-    if (!commitUrl) {
-      throw new PortalError("Portal action has no commit endpoint.", "ACTION_COMMIT_NOT_ALLOWED", 403);
-    }
-    const response = await session.get(commitUrl);
-    await saveSession(session.serialize());
-    await deleteConfirmation(confirmationId);
-    const portalMessage = normalizeDetailText(response.body, response.contentType);
-    const returnedRecordId = extractOpenFormId(response.body) ?? newRecordId;
     return {
-      ok: response.ok,
-      actionId: confirmation.actionId,
-      recordId: returnedRecordId,
-      committedAt: new Date().toISOString(),
-      status: response.status,
-      summary: response.ok
-        ? `Committed ${commitSummaryLabel(action)} '${confirmation.actionTitle}'.`
-        : `Portal returned HTTP ${response.status} for '${confirmation.actionTitle}'.`,
-      portalMessage: portalMessage || undefined,
-      ...(attachmentUploads.length > 0 ? { attachmentUploads } : {})
+      ok: missingHandles.length === 0,
+      cancelledHandles,
+      missingHandles
     };
+  }
+
+  async commitPendingWrites(pendingWriteHandles: string[]): Promise<PortalCommitBatchResult> {
+    const results: PortalCommitResult[] = [];
+    for (const pendingWriteHandle of pendingWriteHandles) {
+      try {
+        results.push(await this.commitPendingWrite(pendingWriteHandle));
+      } catch (error) {
+        results.push(notSentCommitResult(
+          pendingWriteHandle,
+          "unknown",
+          `Pending write failed before dispatch: ${error instanceof Error ? error.message : String(error)}`
+        ));
+      }
+    }
+    const counts = {
+      succeeded: results.filter((result) => result.outcome === "succeeded").length,
+      notSent: results.filter((result) => result.outcome === "notSent").length,
+      rejected: results.filter((result) => result.outcome === "rejected").length,
+      outcomeUncertain: results.filter((result) => result.outcome === "outcomeUncertain").length
+    };
+    return {
+      ok: results.length > 0 && counts.succeeded === results.length,
+      partial: counts.succeeded > 0 && counts.succeeded < results.length,
+      attemptedCount: results.length,
+      counts,
+      results
+    };
+  }
+
+  private async commitPendingWrite(pendingWriteHandle: string): Promise<PortalCommitResult> {
+    const pendingWrite = await loadPendingWrite(pendingWriteHandle).catch(() => null);
+    if (!pendingWrite) {
+      return notSentCommitResult(pendingWriteHandle, "unknown", "Pending write was not found, expired, cancelled, or already used.");
+    }
+    if (Date.parse(pendingWrite.expiresAt) <= Date.now()) {
+      await deletePendingWrite(pendingWriteHandle);
+      return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, "Pending write expired before it was sent.");
+    }
+
+    let session: CookieSession | undefined;
+    let action: PortalAction | undefined;
+    let config: PortalConfig;
+    let sourceForm: Awaited<ReturnType<CookieSession["get"]>>;
+    let newRecordId: string;
+    let originalId: string;
+    let xml: string;
+    let saveUrl: string;
+    let commitUrl: string;
+    let attachmentBytes = new Map<string, Buffer>();
+    try {
+      this.actionCache = undefined;
+      const resolved = await this.resolveCommitAction(pendingWrite.actionId, {
+        recordId: pendingWrite.recordId,
+        serviceId: pendingWrite.serviceId
+      });
+      action = resolved.action;
+      const scopeIssues = [
+        ...resolved.validationIssues,
+        ...(action ? this.commitScopeIssues(action) : [])
+      ];
+      if (!action || scopeIssues.length > 0) {
+        await deletePendingWrite(pendingWriteHandle);
+        return notSentCommitResult(
+          pendingWriteHandle,
+          pendingWrite.actionId,
+          scopeIssues.join(" ") || "The portal action is no longer available for live commit."
+        );
+      }
+      if (actionContractFingerprint(action) !== pendingWrite.contractFingerprint) {
+        await deletePendingWrite(pendingWriteHandle);
+        return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, "The portal form changed after review. Stage and approve a new draft.");
+      }
+
+      config = await loadConfig();
+      session = await this.authenticatedSession(config);
+      const status = await this.validateSession(config, session);
+      if (portalAccountBinding(config, status) !== pendingWrite.accountId) {
+        await deletePendingWrite(pendingWriteHandle);
+        return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, "The authenticated portal account changed after review. Stage and approve a new draft.");
+      }
+      const verifiedAttachments = await loadVerifiedStagedAttachments(pendingWriteHandle, pendingWrite.attachments ?? []);
+      if (verifiedAttachments.issue) {
+        await deletePendingWrite(pendingWriteHandle);
+        return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, verifiedAttachments.issue);
+      }
+      attachmentBytes = verifiedAttachments.bytes;
+
+      const sourceRecordId = action.recordId ?? pendingWrite.recordId ?? action.id;
+      const sourceFormUrl = this.buildActionUrl(config, action.serviceUrl, sourceRecordId, "get");
+      if (!sourceFormUrl) {
+        await deletePendingWrite(pendingWriteHandle);
+        return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, "Portal action has no readable source form.");
+      }
+      sourceForm = await session.get(sourceFormUrl);
+      if (!sourceForm.ok) {
+        await deletePendingWrite(pendingWriteHandle);
+        return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, `Portal form could not be revalidated (HTTP ${sourceForm.status}).`);
+      }
+      const sourceAction = extractPortalActions(sourceForm.body, sourceForm.contentType, {
+        id: action.serviceId,
+        title: action.serviceTitle,
+        serviceUrl: action.serviceUrl,
+        xuclass: action.xuclass
+      }, {
+        source: "detail",
+        recordId: sourceRecordId,
+        recordTitle: action.recordTitle
+      }).map(sanitizePortalAction).find((candidate) => candidate.id === pendingWrite.actionId);
+      if (!sourceAction || actionContractFingerprint(sourceAction) !== pendingWrite.contractFingerprint) {
+        await deletePendingWrite(pendingWriteHandle);
+        return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, "The portal form changed during preflight. Stage and approve a new draft.");
+      }
+      action = sourceAction;
+      newRecordId = randomUUID().toUpperCase();
+      ({ xml, originalId } = this.buildCommitFormXml(
+        sourceForm.body,
+        action,
+        pendingWrite.values,
+        newRecordId,
+        sourceRecordId,
+        config
+      ));
+      const builtSaveUrl = this.buildActionUrl(config, action.serviceUrl, newRecordId, "save", {
+        originalId,
+        resourceOrigin: "form"
+      });
+      const builtCommitUrl = this.buildActionUrl(config, action.serviceUrl, newRecordId, action.id, { originalId });
+      if (!builtSaveUrl || !builtCommitUrl) {
+        await deletePendingWrite(pendingWriteHandle);
+        return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, "Portal action has no complete write contract.");
+      }
+      saveUrl = builtSaveUrl;
+      commitUrl = builtCommitUrl;
+    } catch (error) {
+      await deletePendingWrite(pendingWriteHandle).catch(() => false);
+      return notSentCommitResult(
+        pendingWriteHandle,
+        pendingWrite.actionId,
+        `Pending write failed preflight: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    let claimed: PendingPortalWrite | null;
+    try {
+      claimed = await claimPendingWrite(pendingWriteHandle);
+    } catch (error) {
+      await deletePendingWrite(pendingWriteHandle).catch(() => false);
+      await deleteClaimedPendingWrite(pendingWriteHandle).catch(() => undefined);
+      return notSentCommitResult(
+        pendingWriteHandle,
+        pendingWrite.actionId,
+        `Pending write could not be claimed before dispatch: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    if (!claimed) {
+      return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, "Pending write could not be claimed because it expired or was already used.");
+    }
+    let permit: PortalWritePermit;
+    try {
+      permit = issuePortalWritePermit(claimed, [
+        { method: "POST", url: saveUrl },
+        ...(claimed.attachments ?? []).flatMap((attachment) => attachment.uploadEndpoint
+          ? [{
+              method: "POST" as const,
+              url: this.buildUploadUrl(config, attachment.uploadEndpoint, newRecordId, originalId)
+            }]
+          : []),
+        { method: "GET", url: commitUrl }
+      ]);
+    } catch (error) {
+      await deleteClaimedPendingWrite(pendingWriteHandle).catch(() => undefined);
+      return notSentCommitResult(
+        pendingWriteHandle,
+        pendingWrite.actionId,
+        `Internal write permit could not be issued before dispatch: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    let attachmentUploads: NonNullable<PortalCommitResult["attachmentUploads"]> = [];
+    try {
+      const saveResponse = await session.writePost(permit, saveUrl, xml, {
+        headers: {
+          "content-type": "application/xml;charset=UTF-8"
+        }
+      });
+      if (!saveResponse.ok) {
+        const portalMessage = portalResponseMessage(saveResponse.body, saveResponse.contentType);
+        return dispatchedFailureResult(
+          claimed,
+          saveResponse.status,
+          `Portal returned HTTP ${saveResponse.status} while saving '${claimed.actionTitle}'.`,
+          portalMessage
+        );
+      }
+
+      attachmentUploads = await this.uploadStagedAttachments(
+        permit,
+        config,
+        session,
+        claimed.attachments ?? [],
+        attachmentBytes,
+        newRecordId,
+        originalId
+      );
+      if (attachmentUploads.some((upload) => !upload.ok)) {
+        const failed = attachmentUploads.find((upload) => !upload.ok)!;
+        return {
+          ...dispatchedFailureResult(
+            claimed,
+            failed.status,
+            `Portal returned HTTP ${failed.status} while uploading attachment '${failed.filename}'.`
+          ),
+          recordId: newRecordId,
+          attachmentUploads
+        };
+      }
+
+      const response = await session.writeGet(permit, commitUrl);
+      const portalMessage = portalResponseMessage(response.body, response.contentType);
+      const returnedRecordId = extractOpenFormId(response.body);
+      if (!response.ok || !returnedRecordId) {
+        return {
+          ...dispatchedFailureResult(
+            claimed,
+            response.status,
+            response.ok
+              ? `Portal response did not prove that '${claimed.actionTitle}' completed.`
+              : `Portal returned HTTP ${response.status} for '${claimed.actionTitle}'.`,
+            portalMessage
+          ),
+          recordId: returnedRecordId ?? newRecordId,
+          ...(attachmentUploads.length > 0 ? { attachmentUploads } : {})
+        };
+      }
+      return {
+        ok: true,
+        outcome: "succeeded",
+        pendingWriteHandle,
+        actionId: claimed.actionId,
+        recordId: returnedRecordId,
+        completedAt: new Date().toISOString(),
+        status: response.status,
+        summary: `Committed ${commitSummaryLabel(action)} '${claimed.actionTitle}'.`,
+        portalMessage: portalMessage || undefined,
+        ...(attachmentUploads.length > 0 ? { attachmentUploads } : {})
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        outcome: "outcomeUncertain",
+        pendingWriteHandle,
+        actionId: claimed.actionId,
+        recordId: newRecordId,
+        completedAt: new Date().toISOString(),
+        summary: `The write was dispatched, but its final outcome is uncertain. Do not retry automatically. ${error instanceof Error ? error.message : String(error)}`,
+        ...(attachmentUploads.length > 0 ? { attachmentUploads } : {})
+      };
+    } finally {
+      closePortalWritePermit(permit);
+      await saveSession(session.serialize()).catch(() => undefined);
+      await deleteClaimedPendingWrite(pendingWriteHandle).catch(() => undefined);
+    }
   }
 
   async discoverCapabilities(): Promise<CapabilityMap> {
@@ -1318,10 +1542,12 @@ export class PortalClient {
     };
   }
 
-  private async uploadConfirmedAttachments(
+  private async uploadStagedAttachments(
+    permit: PortalWritePermit,
     config: PortalConfig,
     session: CookieSession,
-    attachments: PreparedPortalAttachment[],
+    attachments: StagedPortalAttachment[],
+    attachmentBytes: Map<string, Buffer>,
     recordId: string,
     originalId: string
   ): Promise<NonNullable<PortalCommitResult["attachmentUploads"]>> {
@@ -1337,12 +1563,23 @@ export class PortalClient {
         continue;
       }
       const form = new FormData();
-      const bytes = await readFile(attachment.filePath);
-      form.set("file", new Blob([bytes], { type: attachment.mimeType }), attachment.filename);
+      const bytes = attachmentBytes.get(attachment.filePath);
+      if (!bytes) {
+        results.push({
+          fieldName: attachment.fieldName,
+          filename: attachment.filename,
+          ok: false,
+          status: 0
+        });
+        continue;
+      }
+      const blobBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      form.set("file", new Blob([blobBytes], { type: attachment.mimeType }), attachment.filename);
       form.set("fieldName", attachment.fieldName);
       form.set("recordId", recordId);
       form.set("originalId", originalId);
-      const response = await session.post(
+      const response = await session.writePost(
+        permit,
         this.buildUploadUrl(config, attachment.uploadEndpoint, recordId, originalId),
         form
       );
@@ -1485,6 +1722,216 @@ export async function configureCredentials(options: {
   await (options.credentialStore ?? new KeytarCredentialStore()).setPassword(options.username, options.password);
 }
 
+async function stagePendingAttachments(
+  pendingWriteHandle: string,
+  attachments: PreparedPortalAttachment[]
+): Promise<StagedPortalAttachment[]> {
+  if (attachments.length === 0) {
+    return [];
+  }
+  const artifactDir = pendingWriteArtifactsDir(pendingWriteHandle);
+  await mkdir(artifactDir, { recursive: true, mode: 0o700 });
+  await chmod(artifactDir, 0o700);
+  const staged: StagedPortalAttachment[] = [];
+  for (const [index, attachment] of attachments.entries()) {
+    const safeName = path.basename(attachment.filename).replace(/[^a-zA-Z0-9._-]/g, "_") || "attachment";
+    const stagedPath = path.join(artifactDir, `${index + 1}-${safeName}`);
+    await copyFile(attachment.filePath, stagedPath);
+    await chmod(stagedPath, 0o600);
+    const bytes = await readFile(stagedPath);
+    if (bytes.byteLength !== attachment.byteLength) {
+      throw new Error(`Attachment '${attachment.filename}' changed while it was being staged.`);
+    }
+    if (await detectImageMimeType(stagedPath) !== attachment.mimeType) {
+      throw new Error(`Attachment '${attachment.filename}' changed type while it was being staged.`);
+    }
+    staged.push({
+      ...attachment,
+      filePath: stagedPath,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
+  }
+  return staged;
+}
+
+async function loadVerifiedStagedAttachments(
+  pendingWriteHandle: string,
+  attachments: StagedPortalAttachment[]
+): Promise<{ issue?: string; bytes: Map<string, Buffer> }> {
+  const expectedDir = path.resolve(pendingWriteArtifactsDir(pendingWriteHandle));
+  const verifiedBytes = new Map<string, Buffer>();
+  for (const attachment of attachments) {
+    try {
+      if (path.dirname(path.resolve(attachment.filePath)) !== expectedDir) {
+        return {
+          issue: `Staged attachment '${attachment.filename}' is outside its immutable pending-write storage. Stage and approve a new draft.`,
+          bytes: verifiedBytes
+        };
+      }
+      const fileStat = await stat(attachment.filePath);
+      if (!fileStat.isFile() || fileStat.size !== attachment.byteLength) {
+        return {
+          issue: `Staged attachment '${attachment.filename}' changed after review. Stage and approve a new draft.`,
+          bytes: verifiedBytes
+        };
+      }
+      const bytes = await readFile(attachment.filePath);
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      if (sha256 !== attachment.sha256) {
+        return {
+          issue: `Staged attachment '${attachment.filename}' changed after review. Stage and approve a new draft.`,
+          bytes: verifiedBytes
+        };
+      }
+      verifiedBytes.set(attachment.filePath, bytes);
+    } catch {
+      return {
+        issue: `Staged attachment '${attachment.filename}' is unavailable. Stage and approve a new draft.`,
+        bytes: verifiedBytes
+      };
+    }
+  }
+  return { bytes: verifiedBytes };
+}
+
+function attachmentReview(attachment: StagedPortalAttachment): PortalAttachmentReview {
+  return {
+    fieldName: attachment.fieldName,
+    fieldLabel: attachment.fieldLabel,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    byteLength: attachment.byteLength,
+    sha256: attachment.sha256,
+    uploadSupported: attachment.uploadSupported
+  };
+}
+
+function pendingWriteSummary(pendingWrite: PendingPortalWrite): PendingPortalWriteSummary {
+  return {
+    pendingWriteHandle: pendingWrite.pendingWriteHandle,
+    accountId: pendingWrite.accountId,
+    domain: pendingWrite.domain,
+    actionId: pendingWrite.actionId,
+    actionTitle: pendingWrite.actionTitle,
+    serviceId: pendingWrite.serviceId,
+    serviceTitle: pendingWrite.serviceTitle,
+    recordId: pendingWrite.recordId,
+    recordTitle: pendingWrite.recordTitle,
+    diff: pendingWrite.diff,
+    ...(pendingWrite.attachments?.length
+      ? { attachments: pendingWrite.attachments.map(attachmentReview) }
+      : {}),
+    createdAt: pendingWrite.createdAt,
+    expiresAt: pendingWrite.expiresAt,
+    requiresExplicitApproval: true
+  };
+}
+
+function pendingWriteTargetReview(pendingWrite: PendingPortalWrite): StagedPortalActionResult["target"] {
+  return {
+    accountId: pendingWrite.accountId,
+    domain: pendingWrite.domain,
+    serviceId: pendingWrite.serviceId,
+    serviceTitle: pendingWrite.serviceTitle,
+    recordId: pendingWrite.recordId,
+    recordTitle: pendingWrite.recordTitle
+  };
+}
+
+function actionContractFingerprint(action: PortalAction): string {
+  const contract = {
+    id: action.id,
+    serviceId: action.serviceId,
+    serviceUrl: action.serviceUrl,
+    xuclass: action.xuclass,
+    recordId: action.recordId,
+    actionKind: action.actionKind,
+    method: action.method,
+    endpoint: action.endpoint,
+    fields: action.fields.map((field) => ({
+      name: field.name,
+      portalId: field.portalId,
+      label: field.label,
+      type: field.type,
+      required: field.required,
+      hidden: field.hidden,
+      editable: field.editable,
+      value: field.value,
+      options: field.options?.map((option) => ({
+        value: option.value,
+        label: option.label,
+        selected: option.selected
+      })),
+      upload: field.upload && {
+        supported: field.upload.supported,
+        mode: field.upload.mode,
+        endpoint: field.upload.endpoint,
+        acceptMimeTypes: field.upload.acceptMimeTypes,
+        maxBytes: field.upload.maxBytes
+      }
+    }))
+  };
+  return createHash("sha256").update(JSON.stringify(contract)).digest("hex");
+}
+
+function portalAccountBinding(config: PortalConfig, status: AuthResult): string | undefined {
+  const accountId = status.userId ?? config.username;
+  return accountId?.trim().toUpperCase() || undefined;
+}
+
+function notSentCommitResult(
+  pendingWriteHandle: string,
+  actionId: string,
+  summary: string
+): PortalCommitResult {
+  return {
+    ok: false,
+    outcome: "notSent",
+    pendingWriteHandle,
+    actionId,
+    completedAt: new Date().toISOString(),
+    summary
+  };
+}
+
+function dispatchedFailureResult(
+  pendingWrite: PendingPortalWrite,
+  status: number,
+  summary: string,
+  portalMessage = ""
+): PortalCommitResult {
+  const rejected = isDefinitivePortalRejection(status, portalMessage);
+  return {
+    ok: false,
+    outcome: rejected ? "rejected" : "outcomeUncertain",
+    pendingWriteHandle: pendingWrite.pendingWriteHandle,
+    actionId: pendingWrite.actionId,
+    completedAt: new Date().toISOString(),
+    status,
+    summary: rejected
+      ? `${summary} The portal definitively rejected the request.`
+      : `${summary} The final outcome is uncertain. Do not retry automatically.`,
+    portalMessage: portalMessage || undefined
+  };
+}
+
+function isDefinitivePortalRejection(status: number, portalMessage: string): boolean {
+  if (status < 400 || status >= 500 || status === 408 || status === 425 || status === 429) {
+    return false;
+  }
+  return /reject|abgelehnt|forbidden|ung[uü]ltig|invalid|nicht (?:m[oö]glich|erlaubt|zul[aä]ssig)/i.test(portalMessage);
+}
+
+function portalResponseMessage(body: string, contentType?: string): string {
+  const normalized = normalizeDetailText(body, contentType);
+  if (normalized) {
+    return normalized;
+  }
+  return contentType?.toLowerCase().includes("text/plain")
+    ? body.replace(/\s+/g, " ").trim().slice(0, 8000)
+    : "";
+}
+
 function dedupeItems<T extends { id: string; title: string }>(items: T[]): T[] {
   const seen = new Map<string, T>();
   for (const item of items) {
@@ -1529,7 +1976,7 @@ function actionToWriteCapability(action: PortalAction): PortalWriteCapability {
     targetRequired: spec.targetRequired,
     uploadSupported,
     liveCommitSupported,
-    executionPolicy: liveCommitSupported ? "confirmation_required_live_commit" : "draft_only_no_live_write"
+    executionPolicy: liveCommitSupported ? "conversational_approval_required_live_commit" : "draft_only_no_live_write"
   };
 }
 

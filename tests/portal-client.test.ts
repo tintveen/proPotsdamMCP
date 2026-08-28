@@ -3,11 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CredentialStore } from "../src/credentials.js";
+import type { PortalCommitBatchResult, PortalCommitResult } from "../src/types.js";
 
 const tempDirs: string[] = [];
 
 describe("PortalClient HTTP flow", () => {
   afterEach(async () => {
+    vi.useRealTimers();
     vi.doUnmock("keytar");
     vi.resetModules();
     delete process.env.PROPPOTSDAM_DATA_DIR;
@@ -90,7 +92,7 @@ describe("PortalClient HTTP flow", () => {
   });
 
   it("uses the authenticated api5 services response when logged services only returns a redirect wrapper", async () => {
-    const { client } = await createMockClient({
+    const { client, requests } = await createMockClient({
       loggedServicesBody: '{"DATA":{"URL":"/prorex/.../services?api=6.262"}}',
       apiServicesBody: `
         <asx:abap><asx:values><SERVICE>
@@ -474,20 +476,28 @@ describe("PortalClient HTTP flow", () => {
     expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
   });
 
-  it("creates a confirmation for save_partner without sending writes, then commits it once", async () => {
+  it("stages save_partner without sending writes, then atomically commits it once", async () => {
     const { client, requests } = await createMockClient({
       loggedServicesBody: servicesWithProfileDetail()
     });
 
-    const confirmation = await client.requestPortalActionCommit("save_partner", {
+    const staged = await client.stagePortalAction("save_partner", {
       phone_ref: "+15550100001"
     });
 
-    expect(confirmation).toMatchObject({
+    expect(staged).toMatchObject({
       ok: true,
       actionId: "save_partner",
       actionTitle: "Speichern",
       expiresAt: expect.any(String),
+      target: {
+        accountId: "MAX",
+        domain: "profile_account_setting",
+        serviceId: undefined,
+        serviceTitle: "Meine Daten",
+        recordId: "PROFILE-1",
+        recordTitle: "Meine Daten"
+      },
       diff: [
         expect.objectContaining({
           name: "phone_ref",
@@ -497,15 +507,17 @@ describe("PortalClient HTTP flow", () => {
       ],
       validationIssues: []
     });
-    expect(confirmation.confirmationId).toMatch(/[0-9a-f-]{36}/);
+    expect(staged.pendingWriteHandle).toMatch(/[0-9a-f-]{36}/);
+    expect(staged.requiresExplicitApproval).toBe(true);
     expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
 
-    const result = await client.commitPortalAction(confirmation.confirmationId!);
+    const result = await commitOne(client, staged.pendingWriteHandle!);
     const savePosts = requests.filter((request) => request.method === "POST" && request.url.includes("name=save"));
     const actionGets = requests.filter((request) => request.method === "GET" && request.url.includes("name=save_partner"));
 
     expect(result).toMatchObject({
       ok: true,
+      outcome: "succeeded",
       actionId: "save_partner",
       recordId: "FINAL-PROFILE-1",
       status: 200,
@@ -520,12 +532,12 @@ describe("PortalClient HTTP flow", () => {
     expect(String(savePosts[0]!.body)).toContain("<textfield id=\"ESQ_CHANGED\"");
     expect(String(savePosts[0]!.body)).toContain(">true</textfield>");
     expect(String(savePosts[0]!.body)).toContain("<history>");
-    await expect(client.commitPortalAction(confirmation.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_NOT_FOUND"
+    await expect(commitOne(client, staged.pendingWriteHandle!)).resolves.toMatchObject({
+      outcome: "notSent"
     });
   });
 
-  it("creates and commits a confirmation for detail-based repair reports", async () => {
+  it("stages and commits detail-based repair reports", async () => {
     const { client, requests } = await createMockClient({
       loggedServicesBody: servicesWithRepairDetail(),
       repairDetailForm: true
@@ -538,36 +550,36 @@ describe("PortalClient HTTP flow", () => {
         actionId: "cmdsend",
         uploadSupported: false,
         liveCommitSupported: true,
-        executionPolicy: "confirmation_required_live_commit"
+        executionPolicy: "conversational_approval_required_live_commit"
       })
     ]));
 
-    const missingTopic = await client.requestPortalActionCommit("cmdsend", {
+    const missingTopic = await client.stagePortalAction("cmdsend", {
       msg_txt: description
     });
     expect(missingTopic).toMatchObject({
       ok: false,
-      confirmationId: undefined,
+      pendingWriteHandle: undefined,
       validationIssues: ["Repair reports require a proposed Schadensart/TOPIC field."]
     });
 
-    const unsupportedAttachment = await client.requestPortalActionCommit("cmdsend", {
+    const unsupportedAttachment = await client.stagePortalAction("cmdsend", {
       msg_txt: description,
       TOPIC_IB_DOOR_1: "TUEROEFFNER",
       attachmentFilePath: "/tmp/damage.jpg"
     });
     expect(unsupportedAttachment).toMatchObject({
       ok: false,
-      confirmationId: undefined,
+      pendingWriteHandle: undefined,
       validationIssues: ["Portal action 'cmdsend' does not expose a supported upload field for attachments."]
     });
 
-    const confirmation = await client.requestPortalActionCommit("cmdsend", {
+    const staged = await client.stagePortalAction("cmdsend", {
       msg_txt: description,
       TOPIC_IB_DOOR_1: "TUEROEFFNER"
     });
 
-    expect(confirmation).toMatchObject({
+    expect(staged).toMatchObject({
       ok: true,
       actionId: "cmdsend",
       actionTitle: "Schaden melden",
@@ -578,15 +590,16 @@ describe("PortalClient HTTP flow", () => {
         expect.objectContaining({ name: "TOPIC_IB_DOOR_1", proposedValue: "TUEROEFFNER" })
       ])
     });
-    expect(confirmation.confirmationId).toMatch(/[0-9a-f-]{36}/);
+    expect(staged.pendingWriteHandle).toMatch(/[0-9a-f-]{36}/);
     expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
 
-    const result = await client.commitPortalAction(confirmation.confirmationId!);
+    const result = await commitOne(client, staged.pendingWriteHandle!);
     const savePosts = requests.filter((request) => request.method === "POST" && request.url.includes("name=save"));
     const actionGets = requests.filter((request) => request.method === "GET" && request.url.includes("name=cmdsend"));
 
     expect(result).toMatchObject({
       ok: true,
+      outcome: "succeeded",
       actionId: "cmdsend",
       recordId: "FINAL-REPAIR-1",
       status: 200,
@@ -601,8 +614,8 @@ describe("PortalClient HTTP flow", () => {
     expect(String(savePosts[0]!.body)).toContain("<choice id=\"TUEROEFFNER\" title=\"Türöffner\" selected=\"true\"/>");
     expect(String(savePosts[0]!.body)).toContain("<textfield id=\"ESQ_CHANGED\"");
     expect(String(savePosts[0]!.body)).toContain(">true</textfield>");
-    await expect(client.commitPortalAction(confirmation.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_NOT_FOUND"
+    await expect(commitOne(client, staged.pendingWriteHandle!)).resolves.toMatchObject({
+      outcome: "notSent"
     });
   });
 
@@ -613,19 +626,19 @@ describe("PortalClient HTTP flow", () => {
     });
     const description = "Tür <klemmt> & \"summt\"";
 
-    const confirmation = await client.requestPortalActionCommit("cmdsend", {
+    const staged = await client.stagePortalAction("cmdsend", {
       msg_txt: description,
       TOPIC_IB_DOOR_1: "TUEROEFFNER",
       ROOMS_CHO_IB_1: "Wohnung",
       repair_cost: "120",
       preferred_date: "17.06.2026"
     });
-    expect(confirmation).toMatchObject({
+    expect(staged).toMatchObject({
       ok: true,
       validationIssues: []
     });
 
-    await client.commitPortalAction(confirmation.confirmationId!);
+    await commitOne(client, staged.pendingWriteHandle!);
     const savePost = requests.find((request) => request.method === "POST" && request.url.includes("name=save"))!;
     const saveUrl = new URL(savePost.url);
     const newId = saveUrl.searchParams.get("id");
@@ -666,24 +679,24 @@ describe("PortalClient HTTP flow", () => {
 
     const textPath = path.join(tempDir, "damage.txt");
     await writeFile(textPath, "not an image", "utf8");
-    const invalidAttachment = await client.requestPortalActionCommit("cmdsend", {
+    const invalidAttachment = await client.stagePortalAction("cmdsend", {
       msg_txt: "Der Deckel ist defekt.",
       TOPIC_IB_DOOR_1: "TUEROEFFNER",
       attachmentFilePath: textPath
     });
     expect(invalidAttachment).toMatchObject({
       ok: false,
-      confirmationId: undefined,
+      pendingWriteHandle: undefined,
       validationIssues: [expect.stringContaining("must be a JPEG or PNG image")]
     });
 
-    const confirmation = await client.requestPortalActionCommit("cmdsend", {
+    const staged = await client.stagePortalAction("cmdsend", {
       msg_txt: "Der Deckel der Bio-Muelltonne ist an einer Seite aus der Aufhaengung gebrochen.",
       TOPIC_IB_DOOR_1: "TUEROEFFNER",
       attachmentFilePath: photoPath
     });
 
-    expect(confirmation).toMatchObject({
+    expect(staged).toMatchObject({
       ok: true,
       actionId: "cmdsend",
       validationIssues: [],
@@ -699,14 +712,15 @@ describe("PortalClient HTTP flow", () => {
           filename: "damage.jpg",
           mimeType: "image/jpeg",
           uploadSupported: true,
-          uploadEndpoint: "/repair-upload"
+          sha256: expect.stringMatching(/^[0-9a-f]{64}$/)
         })
       ]
     });
-    expect(JSON.stringify(confirmation)).not.toContain("JFIF");
+    expect(JSON.stringify(staged)).not.toContain("JFIF");
+    expect(JSON.stringify(staged)).not.toContain(photoPath);
     expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
 
-    const result = await client.commitPortalAction(confirmation.confirmationId!);
+    const result = await commitOne(client, staged.pendingWriteHandle!);
     const uploadPosts = requests.filter((request) => request.method === "POST" && request.url.includes("/repair-upload"));
     const actionGets = requests.filter((request) => request.method === "GET" && request.url.includes("name=cmdsend"));
 
@@ -740,16 +754,17 @@ describe("PortalClient HTTP flow", () => {
       repairDetailForm: true,
       failRepairSave: true
     });
-    const saveConfirmation = await saveFailure.client.requestPortalActionCommit("cmdsend", values);
-    const saveResult = await saveFailure.client.commitPortalAction(saveConfirmation.confirmationId!);
+    const savePending = await saveFailure.client.stagePortalAction("cmdsend", values);
+    const saveResult = await commitOne(saveFailure.client, savePending.pendingWriteHandle!);
     expect(saveResult).toMatchObject({
       ok: false,
+      outcome: "outcomeUncertain",
       actionId: "cmdsend",
       status: 500,
       summary: expect.stringContaining("while saving")
     });
-    await expect(saveFailure.client.commitPortalAction(saveConfirmation.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_NOT_FOUND"
+    await expect(commitOne(saveFailure.client, savePending.pendingWriteHandle!)).resolves.toMatchObject({
+      outcome: "notSent"
     });
 
     const uploadFailure = await createMockClient({
@@ -759,13 +774,14 @@ describe("PortalClient HTTP flow", () => {
     });
     const photoPath = path.join(uploadFailure.tempDir, "damage.png");
     await writeFile(photoPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-    const uploadConfirmation = await uploadFailure.client.requestPortalActionCommit("cmdsend", {
+    const uploadPending = await uploadFailure.client.stagePortalAction("cmdsend", {
       ...values,
       attachmentFilePath: photoPath
     });
-    const uploadResult = await uploadFailure.client.commitPortalAction(uploadConfirmation.confirmationId!);
+    const uploadResult = await commitOne(uploadFailure.client, uploadPending.pendingWriteHandle!);
     expect(uploadResult).toMatchObject({
       ok: false,
+      outcome: "outcomeUncertain",
       actionId: "cmdsend",
       status: 502,
       summary: expect.stringContaining("while uploading attachment"),
@@ -785,16 +801,17 @@ describe("PortalClient HTTP flow", () => {
       repairDetailForm: true,
       failRepairCommit: true
     });
-    const actionConfirmation = await actionFailure.client.requestPortalActionCommit("cmdsend", values);
-    const actionResult = await actionFailure.client.commitPortalAction(actionConfirmation.confirmationId!);
+    const actionPending = await actionFailure.client.stagePortalAction("cmdsend", values);
+    const actionResult = await commitOne(actionFailure.client, actionPending.pendingWriteHandle!);
     expect(actionResult).toMatchObject({
       ok: false,
+      outcome: "rejected",
       actionId: "cmdsend",
       status: 409,
       summary: expect.stringContaining("Portal returned HTTP 409")
     });
-    await expect(actionFailure.client.commitPortalAction(actionConfirmation.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_NOT_FOUND"
+    await expect(commitOne(actionFailure.client, actionPending.pendingWriteHandle!)).resolves.toMatchObject({
+      outcome: "notSent"
     });
   });
 
@@ -808,17 +825,17 @@ describe("PortalClient HTTP flow", () => {
       TOPIC_IB_DOOR_1: "TUEROEFFNER"
     };
 
-    const ambiguous = await client.requestPortalActionCommit("cmdsend", values);
+    const ambiguous = await client.stagePortalAction("cmdsend", values);
     expect(ambiguous).toMatchObject({
       ok: false,
-      confirmationId: undefined,
+      pendingWriteHandle: undefined,
       validationIssues: [expect.stringContaining("ambiguous")]
     });
 
-    const confirmation = await client.requestPortalActionCommit("cmdsend", values, {
+    const staged = await client.stagePortalAction("cmdsend", values, {
       recordId: "REPAIR-FORM-B"
     });
-    expect(confirmation).toMatchObject({
+    expect(staged).toMatchObject({
       ok: true,
       actionId: "cmdsend",
       validationIssues: [],
@@ -827,7 +844,7 @@ describe("PortalClient HTTP flow", () => {
       ])
     });
 
-    const result = await client.commitPortalAction(confirmation.confirmationId!);
+    const result = await commitOne(client, staged.pendingWriteHandle!);
     const savePost = requests.filter((request) => request.method === "POST" && request.url.includes("name=save")).at(-1)!;
     const actionGet = requests.filter((request) => request.method === "GET" && request.url.includes("name=cmdsend")).at(-1)!;
 
@@ -840,99 +857,189 @@ describe("PortalClient HTTP flow", () => {
     expect(actionGet.url).toContain("originalId=REPAIR-FORM-B");
   });
 
-  it("rejects stale confirmations when the stored target no longer resolves uniquely", async () => {
-    const { client } = await createMockClient({
-      loggedServicesBody: servicesWithRepairDetail(),
-      dualRepairDetailForms: true
+  it("supports multiple pending writes and local cancellation without portal writes", async () => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithProfileDetail()
     });
-    const { loadConfirmation, saveConfirmation } = await import("../src/storage.js");
-    const expiresAt = new Date(Date.now() + 60_000).toISOString();
-
-    await saveConfirmation({
-      confirmationId: "stale-cmdsend",
-      actionId: "cmdsend",
-      actionTitle: "Schaden melden",
-      xuclass: "ESQ_TENA_DMG",
-      serviceUrl: "/repair-service",
-      values: {
-        msg_txt: "Alte Bestätigung ohne eindeutiges Ziel.",
-        TOPIC_IB_DOOR_1: "TUEROEFFNER"
-      },
-      diff: [
-        {
-          name: "msg_txt",
-          proposedValue: "Alte Bestätigung ohne eindeutiges Ziel."
-        }
-      ],
-      createdAt: new Date().toISOString(),
-      expiresAt
+    const first = await client.stagePortalAction("save_partner", {
+      phone_ref: "+15550100001"
+    });
+    const second = await client.stagePortalAction("save_partner", {
+      phone_ref: "+15550100002"
     });
 
-    await expect(client.commitPortalAction("stale-cmdsend")).rejects.toMatchObject({
-      code: "ACTION_COMMIT_NOT_ALLOWED"
+    await expect(client.listPendingWrites()).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({ pendingWriteHandle: first.pendingWriteHandle }),
+        expect.objectContaining({ pendingWriteHandle: second.pendingWriteHandle })
+      ]
     });
-    await expect(loadConfirmation("stale-cmdsend")).resolves.toBeNull();
+    await expect(client.cancelPendingWrites([first.pendingWriteHandle!])).resolves.toMatchObject({
+      ok: true,
+      cancelledHandles: [first.pendingWriteHandle]
+    });
+    await expect(client.listPendingWrites()).resolves.toMatchObject({
+      items: [expect.objectContaining({ pendingWriteHandle: second.pendingWriteHandle })]
+    });
+    const remaining = (await client.listPendingWrites()).items[0]!;
+    expect(Date.parse(remaining.expiresAt) - Date.parse(remaining.createdAt)).toBe(10 * 60 * 1000);
+    expect(requests.filter((request) =>
+      request.url.includes("name=save") ||
+      request.url.includes("name=save_partner") ||
+      request.url.includes("name=cmdsend") ||
+      request.url.includes("/repair-upload")
+    )).toEqual([]);
   });
 
-  it("rejects expired confirmations with an explicit expiry error", async () => {
+  it("allows only one concurrent commit sequence for the same pending write", async () => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithProfileDetail()
+    });
+    const staged = await client.stagePortalAction("save_partner", {
+      phone_ref: "+15550100001"
+    });
+
+    const results = await Promise.all([
+      commitOne(client, staged.pendingWriteHandle!),
+      commitOne(client, staged.pendingWriteHandle!)
+    ]);
+
+    expect(results.map((result) => result.outcome).sort()).toEqual(["notSent", "succeeded"]);
+    expect(requests.filter((request) => request.method === "POST" && request.url.includes("name=save"))).toHaveLength(1);
+    expect(requests.filter((request) => request.method === "GET" && request.url.includes("name=save_partner"))).toHaveLength(1);
+  });
+
+  it("continues an approved batch after rejection and reports partial completion", async () => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairDetailForm: true,
+      failRepairCommitOnce: true
+    });
+    const first = await client.stagePortalAction("cmdsend", {
+      msg_txt: "Die Haustür schließt nicht.",
+      TOPIC_IB_DOOR_1: "TUEROEFFNER"
+    });
+    const second = await client.stagePortalAction("cmdsend", {
+      msg_txt: "Der Türöffner reagiert nicht.",
+      TOPIC_IB_DOOR_1: "TUEROEFFNER"
+    });
+
+    const batch = await client.commitPendingWrites([
+      first.pendingWriteHandle!,
+      second.pendingWriteHandle!
+    ]);
+
+    expect(batch).toMatchObject({
+      ok: false,
+      partial: true,
+      attemptedCount: 2,
+      counts: { succeeded: 1, notSent: 0, rejected: 1, outcomeUncertain: 0 },
+      results: [
+        expect.objectContaining({ pendingWriteHandle: first.pendingWriteHandle, outcome: "rejected" }),
+        expect.objectContaining({ pendingWriteHandle: second.pendingWriteHandle, outcome: "succeeded" })
+      ]
+    });
+    expect(requests.filter((request) => request.method === "POST" && request.url.includes("name=save"))).toHaveLength(2);
+    expect(requests.filter((request) => request.method === "GET" && request.url.includes("name=cmdsend"))).toHaveLength(2);
+  });
+
+  it("invalidates account-mismatched and form-drifted pending writes before dispatch", async () => {
+    const accountCase = await createMockClient({
+      loggedServicesBody: servicesWithProfileDetail()
+    });
+    const accountPending = await accountCase.client.stagePortalAction("save_partner", {
+      phone_ref: "+15550100001"
+    });
+    accountCase.setPortalUserId("OTHER");
+
+    await expect(commitOne(accountCase.client, accountPending.pendingWriteHandle!)).resolves.toMatchObject({
+      outcome: "notSent",
+      summary: expect.stringContaining("account changed")
+    });
+    expect(accountCase.requests.filter((request) => request.method === "POST" && request.url.includes("name=save"))).toHaveLength(0);
+
+    const driftCase = await createMockClient({
+      loggedServicesBody: servicesWithProfileDetail()
+    });
+    const driftPending = await driftCase.client.stagePortalAction("save_partner", {
+      phone_ref: "+15550100001"
+    });
+    driftCase.setProfilePhone("+15550999999");
+
+    await expect(commitOne(driftCase.client, driftPending.pendingWriteHandle!)).resolves.toMatchObject({
+      outcome: "notSent",
+      summary: expect.stringContaining("form changed")
+    });
+    expect(driftCase.requests.filter((request) => request.method === "POST" && request.url.includes("name=save"))).toHaveLength(0);
+  });
+
+  it("invalidates a staged attachment whose content hash changes", async () => {
+    const { client, requests, tempDir } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairUploadDetailForm: true
+    });
+    const photoPath = path.join(tempDir, "damage.png");
+    await writeFile(photoPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const staged = await client.stagePortalAction("cmdsend", {
+      msg_txt: "Der Türöffner reagiert nicht.",
+      TOPIC_IB_DOOR_1: "TUEROEFFNER",
+      attachmentFilePath: photoPath
+    });
+    const { loadPendingWrite } = await import("../src/storage.js");
+    const stored = await loadPendingWrite(staged.pendingWriteHandle!);
+    await writeFile(stored!.attachments![0]!.filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00]));
+
+    await expect(commitOne(client, staged.pendingWriteHandle!)).resolves.toMatchObject({
+      outcome: "notSent",
+      summary: expect.stringContaining("attachment")
+    });
+    expect(requests.filter((request) => request.method === "POST" && request.url.includes("name=save"))).toHaveLength(0);
+  });
+
+  it("does not send an expired pending write", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T12:00:00.000Z"));
     const { client } = await createMockClient({
       loggedServicesBody: servicesWithProfileDetail()
     });
-    const { loadConfirmation, saveConfirmation } = await import("../src/storage.js");
-
-    await saveConfirmation({
-      confirmationId: "expired-save-partner",
-      actionId: "save_partner",
-      actionTitle: "Speichern",
-      recordId: "PROFILE-1",
-      recordTitle: "Meine Daten",
-      serviceId: "ESQ_IA_PART",
-      xuclass: "ESQ_IA_PART",
-      serviceUrl: "/profile-service",
-      values: {
-        phone_ref: "+15550100001"
-      },
-      diff: [
-        {
-          name: "phone_ref",
-          proposedValue: "+15550100001"
-        }
-      ],
-      createdAt: "2026-05-03T00:00:00.000Z",
-      expiresAt: "2026-05-03T00:01:00.000Z"
+    const { loadPendingWrite } = await import("../src/storage.js");
+    const staged = await client.stagePortalAction("save_partner", {
+      phone_ref: "+15550100001"
     });
+    vi.setSystemTime(new Date("2026-08-28T12:11:00.000Z"));
 
-    await expect(client.commitPortalAction("expired-save-partner")).rejects.toMatchObject({
-      code: "CONFIRMATION_EXPIRED"
+    await expect(commitOne(client, staged.pendingWriteHandle!)).resolves.toMatchObject({
+      outcome: "notSent",
+      summary: expect.stringContaining("expired")
     });
-    await expect(loadConfirmation("expired-save-partner")).resolves.toBeNull();
+    await expect(loadPendingWrite(staged.pendingWriteHandle!)).resolves.toBeNull();
   });
 
-  it("does not create confirmations for locked fields, unknown fields, or blocked actions", async () => {
+  it("does not stage pending writes for locked fields, unknown fields, or blocked actions", async () => {
     const { client, requests } = await createMockClient({
       loggedServicesBody: servicesWithActions(),
       actionBoxlists: true
     });
 
-    const blocked = await client.requestPortalActionCommit("DMG-NEW", {
+    const blocked = await client.stagePortalAction("DMG-NEW", {
       description: "Heizung bleibt kalt"
     });
     expect(blocked).toMatchObject({
       ok: false,
-      confirmationId: undefined,
+      pendingWriteHandle: undefined,
       validationIssues: ["Only Meine Daten/save_partner and Reparatur/cmdsend damage reports can be committed in this version."]
     });
 
     const profileClient = (await createMockClient({
       loggedServicesBody: servicesWithProfileDetail()
     })).client;
-    const invalid = await profileClient.requestPortalActionCommit("save_partner", {
+    const invalid = await profileClient.stagePortalAction("save_partner", {
       mail: "blocked@example.test",
       unknown_field: "ignored"
     });
     expect(invalid).toMatchObject({
       ok: false,
-      confirmationId: undefined,
+      pendingWriteHandle: undefined,
       validationIssues: expect.arrayContaining([
         "Field 'mail' is not editable.",
         "Unknown field 'unknown_field'."
@@ -941,6 +1048,14 @@ describe("PortalClient HTTP flow", () => {
     expect(requests.filter((request) => request.method === "POST" && !request.url.includes("/authenticate"))).toEqual([]);
   });
 });
+
+async function commitOne(
+  client: { commitPendingWrites(handles: string[]): Promise<PortalCommitBatchResult> },
+  pendingWriteHandle: string
+): Promise<PortalCommitResult> {
+  const batch = await client.commitPendingWrites([pendingWriteHandle]);
+  return batch.results[0]!;
+}
 
 async function createMockClient(options: {
   authBody?: string;
@@ -955,6 +1070,7 @@ async function createMockClient(options: {
   failRepairSave?: boolean;
   failRepairUpload?: boolean;
   failRepairCommit?: boolean;
+  failRepairCommitOnce?: boolean;
 } = {}) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
   tempDirs.push(tempDir);
@@ -977,6 +1093,9 @@ async function createMockClient(options: {
   });
 
   const requests: Array<{ url: string; method?: string; body?: BodyInit | null }> = [];
+  let activeUserId = "MAX";
+  let activeProfilePhone = "+15550100000";
+  let repairCommitCalls = 0;
   const hasRepairDetail = Boolean(
     options.repairDetailForm ||
       options.repairUploadDetailForm ||
@@ -984,7 +1103,8 @@ async function createMockClient(options: {
       options.namespacedRepairDetailForm ||
       options.failRepairSave ||
       options.failRepairUpload ||
-      options.failRepairCommit
+      options.failRepairCommit ||
+      options.failRepairCommitOnce
   );
   const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const requestUrl = String(url);
@@ -1002,7 +1122,7 @@ async function createMockClient(options: {
     }
 
     if (requestUrl.includes("/prorex/esq/logi/services")) {
-      return new Response(options.loggedServicesBody ?? `
+      const body = options.loggedServicesBody ?? `
         <asx:abap><asx:values><SERVICE>
           <HEAD><LOGGED>X</LOGGED><USER_ID>MAX</USER_ID></HEAD>
           <FOLDERS>
@@ -1013,7 +1133,8 @@ async function createMockClient(options: {
             </SERVICE_NODE>
           </FOLDERS>
         </SERVICE></asx:values></asx:abap>
-      `, { status: 200, headers: { "content-type": "application/xml" } });
+      `;
+      return new Response(withPortalUser(body, activeUserId), { status: 200, headers: { "content-type": "application/xml" } });
     }
 
     if (requestUrl.includes("/propotsdam-kundenportal/api5/services")) {
@@ -1144,11 +1265,13 @@ async function createMockClient(options: {
     }
 
     if (hasRepairDetail && requestUrl.includes("/repair-service") && requestUrl.includes("name=cmdsend")) {
+      repairCommitCalls += 1;
       const finalId = options.dualRepairDetailForms
         ? (requestUrl.includes("originalId=REPAIR-FORM-B") ? "FINAL-REPAIR-B" : "FINAL-REPAIR-A")
         : "FINAL-REPAIR-1";
-      return new Response(options.failRepairCommit ? "Commit rejected" : `oppc://openform?id=${finalId}`, {
-        status: options.failRepairCommit ? 409 : 200,
+      const reject = Boolean(options.failRepairCommit || options.failRepairCommitOnce && repairCommitCalls === 1);
+      return new Response(reject ? "Commit rejected" : `oppc://openform?id=${finalId}`, {
+        status: reject ? 409 : 200,
         headers: { "content-type": "text/plain" }
       });
     }
@@ -1221,7 +1344,7 @@ async function createMockClient(options: {
     }
 
     if (requestUrl.includes("/profile-service") && requestUrl.includes("id=PROFILE-1")) {
-      return new Response(profileDetailForm(), {
+      return new Response(profileDetailForm(activeProfilePhone), {
         status: 200,
         headers: { "content-type": "application/xml" }
       });
@@ -1234,7 +1357,13 @@ async function createMockClient(options: {
     client: new PortalClient(store, fetchMock),
     requests,
     tempDir,
-    paths
+    paths,
+    setPortalUserId: (userId: string) => {
+      activeUserId = userId;
+    },
+    setProfilePhone: (phone: string) => {
+      activeProfilePhone = phone;
+    }
   };
 }
 
@@ -1258,6 +1387,10 @@ function servicesWithProfileDetail(): string {
   `;
 }
 
+function withPortalUser(body: string, userId: string): string {
+  return body.replace(/<USER_ID>[^<]*<\/USER_ID>/g, `<USER_ID>${userId}</USER_ID>`);
+}
+
 function servicesWithRepairDetail(): string {
   return `
     <asx:abap><asx:values><SERVICE>
@@ -1273,7 +1406,7 @@ function servicesWithRepairDetail(): string {
   `;
 }
 
-function profileDetailForm(): string {
+function profileDetailForm(phone = "+15550100000"): string {
   return `
     <form>
       <id>PROFILE-1</id>
@@ -1285,7 +1418,7 @@ function profileDetailForm(): string {
         <method>POST</method>
       </action>
       <textfield id="SO_#NAME_FIRST#_I_CP" refname="name_first_ref" required="true">Tillmann</textfield>
-      <textfield id="SO_#PHONE#_I_CP" refname="phone_ref" required="true">+15550100000</textfield>
+      <textfield id="SO_#PHONE#_I_CP" refname="phone_ref" required="true">${phone}</textfield>
       <textfield editable="false" id="SO_#SMTP_ADDR#_I_CP" refname="mail" required="true">user@example.test</textfield>
       <choicefield id="SO_#TITLE#_I_CP" meta:saved_value="0002" refname="int_anrede" required="true">
         <choice id="0001" title="Frau"/>
