@@ -19,7 +19,7 @@ This project is pre-1.0. Security fixes are handled on the current mainline vers
 
 ## Local Sensitive Data
 
-By default, the password is stored in the macOS Keychain under the `propotsdam-mcp` service. Local config, session cookies, traces, pending writes, temporary staged attachments, and exports live under:
+By default, the password is stored in the macOS Keychain under the `propotsdam-mcp` service. Local config, session cookies, traces, ProPotsdam pending writes and temporary staged attachments, external-workflow confirmations and normalized report photos, and exports live under:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/

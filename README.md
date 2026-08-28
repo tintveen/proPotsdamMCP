@@ -4,7 +4,7 @@
 
 Unofficial local MCP server for the ProPotsdam/Easysquare customer portal, STEP bulky-waste pickup, and Potsdam abandoned-waste reports.
 
-It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Limited write support uses an explicit conversational approval flow and should be treated as experimental.
+It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Direct ProPotsdam writes use explicit conversational approval; the separate municipal waste workflows remain confirmation-protected. All write support should be treated as experimental.
 
 [![CI](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml)
 

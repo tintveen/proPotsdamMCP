@@ -8,7 +8,7 @@ This repository was reviewed for GitHub publication readiness while keeping the 
 
 - Searched tracked and local project files for likely secrets, credentials, cookies, CSRF tokens, API keys, private keys, `.env` files, local databases, oversized artifacts, and generated build output.
 - Confirmed `dist/`, `node_modules/`, coverage output, logs, and `.DS_Store` are ignored.
-- Reviewed local storage behavior for config, session cookies, traces, exports, pending writes, and private staged attachments.
+- Reviewed local storage behavior for config, session cookies, traces, exports, ProPotsdam pending writes and private staged attachments, and external-workflow confirmations and normalized report photos.
 - Verified atomic single-use claiming, ten-minute expiry, legacy-confirmation invalidation, account/form/hash drift rejection, and no automatic retry after dispatch.
 - Verified that read, discovery, preparation, staging, listing, cancellation, and the live-read test contain no known state-changing portal operation.
 - Verified dependency status with `npm audit` and `npm audit --omit=dev`.
@@ -26,6 +26,7 @@ Runtime data is local by design and must not be committed or pasted into public 
 ~/Library/Application Support/propotsdam-mcp/traces/
 ~/Library/Application Support/propotsdam-mcp/exports/
 ~/Library/Application Support/propotsdam-mcp/pending-writes/
+~/Library/Application Support/propotsdam-mcp/waste-confirmations/
 ```
 
 The portal password is stored through macOS Keychain using the service name `propotsdam-mcp`.
