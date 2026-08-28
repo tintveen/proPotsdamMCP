@@ -408,13 +408,13 @@ describe("CLI", () => {
     expect(harness.stdout()).toContain("[REDACTED]");
   });
 
-  it("supports the two-step commit flow", async () => {
+  it("shows the exact diff and sends immediately after an interactive yes", async () => {
     const { runCli } = await import("../src/cli.js");
     const action = portalAction({
       id: "save_partner",
       title: "Speichern"
     });
-    const requestCalls: Array<{
+    const stageCalls: Array<{
       actionId: string;
       values?: Record<string, unknown>;
       options?: { recordId?: string; serviceId?: string };
@@ -425,15 +425,23 @@ describe("CLI", () => {
         items: [action]
       }),
       getPortalAction: async () => action,
-      requestPortalActionCommit: async (actionId, values, options) => {
-        requestCalls.push({ actionId, values, options });
+      stagePortalAction: async (actionId, values, options) => {
+        stageCalls.push({ actionId, values, options });
         return {
           ok: true,
           actionId,
           actionTitle: "Speichern",
-          confirmationId: "confirm-1",
+          pendingWriteHandle: "pending-1",
           expiresAt: "2026-05-15T00:10:00.000Z",
-          summary: "Ready.",
+          requiresExplicitApproval: true,
+          target: {
+            accountId: "MAX",
+            domain: "profile_account_setting",
+            serviceTitle: "Meine Daten",
+            recordId: "PROFILE-1",
+            recordTitle: "Meine Daten"
+          },
+          summary: "Staged.",
           validationIssues: [],
           diff: [
             {
@@ -444,34 +452,102 @@ describe("CLI", () => {
           ]
         };
       },
-      commitPortalAction: async (confirmationId) => ({
+      cancelPendingWrites: async () => ({ ok: true }),
+      commitPendingWrites: async (pendingWriteHandles) => ({
         ok: true,
-        actionId: "save_partner",
-        recordId: "FINAL-1",
-        committedAt: "2026-05-15T00:00:00.000Z",
-        status: 200,
-        summary: `Committed ${confirmationId}.`
+        partial: false,
+        attemptedCount: 1,
+        counts: { succeeded: 1, notSent: 0, rejected: 0, outcomeUncertain: 0 },
+        results: [{
+          ok: true,
+          outcome: "succeeded",
+          pendingWriteHandle: pendingWriteHandles[0]!,
+          actionId: "save_partner",
+          recordId: "FINAL-1",
+          completedAt: "2026-05-15T00:00:00.000Z",
+          status: 200,
+          summary: "Committed pending write."
+        }]
       })
     });
-    const request = createIo();
-    const commit = createIo();
+    const harness = createIo({ answers: ["yes"], isTty: true });
 
-    await runCli(
-      ["node", "propotsdam-cli", "actions", "request-commit", "save_partner", "--record-id", "PROFILE-1", "--service-id", "PROFILE-SVC", "--value", "phone_ref=+492", "--json"],
-      request.io,
+    expect(await runCli(
+      ["node", "propotsdam-cli", "actions", "send", "save_partner", "--record-id", "PROFILE-1", "--service-id", "PROFILE-SVC", "--value", "phone_ref=+492"],
+      harness.io,
       client
-    );
-    await runCli(["node", "propotsdam-cli", "actions", "commit", "confirm-1", "--json"], commit.io, client);
+    )).toBe(0);
 
-    expect(JSON.parse(request.stdout())).toMatchObject({ confirmationId: "confirm-1" });
-    expect(JSON.parse(commit.stdout())).toMatchObject({ ok: true, recordId: "FINAL-1" });
-    expect(requestCalls).toEqual([
+    expect(harness.stdout()).toContain("Review exact portal change");
+    expect(harness.stdout()).toContain("Account: MAX");
+    expect(harness.stdout()).toContain("Target: Meine Daten");
+    expect(harness.stdout()).toContain("phone_ref: +491 -> +492");
+    expect(harness.stdout()).toContain('"outcome":"succeeded"');
+    expect(harness.stdout()).not.toContain("pending-1");
+    expect(harness.prompts).toContain("Send this exact change to ProPotsdam? [y/N] ");
+    expect(stageCalls).toEqual([
       {
         actionId: "save_partner",
         values: { phone_ref: "+492" },
         options: { recordId: "PROFILE-1", serviceId: "PROFILE-SVC" }
       }
     ]);
+  });
+
+  it("cancels actions send on no and refuses non-interactive or --yes writes", async () => {
+    const { runCli } = await import("../src/cli.js");
+    const action = portalAction({ id: "save_partner", title: "Speichern" });
+    const cancelled: string[][] = [];
+    let commits = 0;
+    const client = minimalClient({
+      listPortalActions: async () => ({ source: "boxlist", items: [action] }),
+      getPortalAction: async () => action,
+      stagePortalAction: async () => ({
+        ok: true,
+        actionId: "save_partner",
+        actionTitle: "Speichern",
+        pendingWriteHandle: "pending-2",
+        expiresAt: "2026-05-15T00:10:00.000Z",
+        requiresExplicitApproval: true,
+        summary: "Staged.",
+        validationIssues: [],
+        diff: [{ name: "phone_ref", currentValue: "+491", proposedValue: "+492" }]
+      }),
+      cancelPendingWrites: async (handles) => {
+        cancelled.push(handles);
+        return { ok: true };
+      },
+      commitPendingWrites: async () => {
+        commits += 1;
+        throw new Error("commit should not run");
+      }
+    });
+    const no = createIo({ answers: ["no"], isTty: true });
+    const nonTty = createIo({ isTty: false });
+    const bypass = createIo({ isTty: true });
+
+    expect(await runCli(
+      ["node", "propotsdam-cli", "actions", "send", "save_partner", "--value", "phone_ref=+492"],
+      no.io,
+      client
+    )).toBe(0);
+    expect(no.stdout()).toContain("Cancelled. No portal write was sent.");
+    expect(cancelled).toEqual([["pending-2"]]);
+    expect(commits).toBe(0);
+
+    expect(await runCli(
+      ["node", "propotsdam-cli", "actions", "send", "save_partner", "--value", "phone_ref=+492"],
+      nonTty.io,
+      client
+    )).toBe(2);
+    expect(nonTty.stderr()).toContain("requires an interactive terminal");
+
+    expect(await runCli(
+      ["node", "propotsdam-cli", "actions", "send", "save_partner", "--yes", "--value", "phone_ref=+492"],
+      bypass.io,
+      client
+    )).toBe(2);
+    expect(bypass.stderr()).toContain("no --yes bypass");
   });
 
   it("prints JSON errors in JSON mode with usage exit code 2", async () => {

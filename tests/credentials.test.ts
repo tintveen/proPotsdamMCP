@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CredentialStore } from "../src/credentials.js";
+import type { PendingPortalWrite } from "../src/types.js";
 
 const tempDirs: string[] = [];
 
@@ -178,7 +179,7 @@ describe("config repair", () => {
   });
 });
 
-describe("confirmation storage hardening", () => {
+describe("pending-write storage hardening", () => {
   afterEach(async () => {
     vi.resetModules();
     delete process.env.PROPPOTSDAM_DATA_DIR;
@@ -188,43 +189,59 @@ describe("confirmation storage hardening", () => {
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  it("saves, loads, and deletes confirmations with valid ids", async () => {
+  it("saves immutable pending writes, atomically claims them once, and deletes claimed state", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
     tempDirs.push(tempDir);
     process.env.PROPPOTSDAM_DATA_DIR = tempDir;
     vi.resetModules();
 
-    const { deleteConfirmation, loadConfirmation, saveConfirmation } = await import("../src/storage.js");
-    const confirmation = testConfirmation("abc-123");
+    const { claimPendingWrite, deleteClaimedPendingWrite, loadPendingWrite, paths, savePendingWrite } = await import("../src/storage.js");
+    const pendingWrite = testPendingWrite("abc-123");
 
-    await saveConfirmation(confirmation);
-    await expect(loadConfirmation("abc-123")).resolves.toMatchObject({
-      confirmationId: "abc-123",
+    await savePendingWrite(pendingWrite);
+    await expect(loadPendingWrite("abc-123")).resolves.toMatchObject({
+      pendingWriteHandle: "abc-123",
+      state: "staged",
       actionId: "save_partner",
       values: { phone_ref: "+15550100001" }
     });
+    await expect(savePendingWrite(pendingWrite)).rejects.toMatchObject({ code: "EEXIST" });
 
-    await deleteConfirmation("abc-123");
-    await expect(loadConfirmation("abc-123")).resolves.toBeNull();
+    const storedPath = path.join(paths.pendingWritesDir, "abc-123.json");
+    const tampered = (await readFile(storedPath, "utf8")).replace("+15550100001", "+15550999999");
+    await writeFile(storedPath, tampered, "utf8");
+    await expect(loadPendingWrite("abc-123")).resolves.toBeNull();
+
+    await savePendingWrite(testPendingWrite("claim-123"));
+
+    await expect(claimPendingWrite("claim-123")).resolves.toMatchObject({
+      pendingWriteHandle: "claim-123",
+      state: "claimed",
+      claimedAt: expect.any(String)
+    });
+    await expect(claimPendingWrite("claim-123")).resolves.toBeNull();
+    await expect(loadPendingWrite("claim-123")).resolves.toBeNull();
+    await deleteClaimedPendingWrite("claim-123");
   });
 
-  it("rejects invalid confirmation ids instead of sanitizing them", async () => {
+  it("rejects invalid pending-write handles instead of sanitizing them", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
     tempDirs.push(tempDir);
     process.env.PROPPOTSDAM_DATA_DIR = tempDir;
     vi.resetModules();
 
-    const { deleteConfirmation, loadConfirmation, saveConfirmation } = await import("../src/storage.js");
+    const { claimPendingWrite, deletePendingWrite, loadPendingWrite, savePendingWrite } = await import("../src/storage.js");
     const invalidIds = ["", "../outside", "abc.def", "abc_def", "abc def", " abc", "abc\n"];
 
-    for (const confirmationId of invalidIds) {
-      await expect(saveConfirmation(testConfirmation(confirmationId))).rejects.toThrow(/Confirmation id/);
-      await expect(loadConfirmation(confirmationId)).rejects.toThrow(/Confirmation id/);
-      await expect(deleteConfirmation(confirmationId)).rejects.toThrow(/Confirmation id/);
+    for (const pendingWriteHandle of invalidIds) {
+      await expect(savePendingWrite(testPendingWrite(pendingWriteHandle))).rejects.toThrow(/Pending write handle/);
+      await expect(loadPendingWrite(pendingWriteHandle)).rejects.toThrow(/Pending write handle/);
+      await expect(claimPendingWrite(pendingWriteHandle)).rejects.toThrow(/Pending write handle/);
+      await expect(deletePendingWrite(pendingWriteHandle)).rejects.toThrow(/Pending write handle/);
     }
   });
 
-  it("does not let path traversal delete files outside the confirmations directory", async () => {
+  it("does not let path traversal delete files outside the pending-writes directory", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
     tempDirs.push(tempDir);
     process.env.PROPPOTSDAM_DATA_DIR = tempDir;
@@ -233,58 +250,72 @@ describe("confirmation storage hardening", () => {
     const outsideFile = path.join(tempDir, "outside.json");
     await writeFile(outsideFile, "keep me", "utf8");
 
-    const { deleteConfirmation } = await import("../src/storage.js");
+    const { deletePendingWrite } = await import("../src/storage.js");
 
-    await expect(deleteConfirmation("../outside")).rejects.toThrow(/Confirmation id/);
+    await expect(deletePendingWrite("../outside")).rejects.toThrow(/Pending write handle/);
     await expect(readdir(tempDir)).resolves.toContain("outside.json");
   });
 
-  it("deletes expired confirmations while preserving future and malformed files", async () => {
+  it("deletes expired staged writes while preserving future, claimed, and malformed files", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
     tempDirs.push(tempDir);
     process.env.PROPPOTSDAM_DATA_DIR = tempDir;
     vi.resetModules();
 
-    const { deleteExpiredConfirmations, ensureStorageDirs, paths } = await import("../src/storage.js");
+    const { claimPendingWrite, deleteExpiredPendingWrites, ensureStorageDirs, paths, savePendingWrite } = await import("../src/storage.js");
     await ensureStorageDirs();
-    await mkdir(path.join(paths.confirmationsDir, "nested"));
+    await mkdir(path.join(paths.pendingWritesDir, "nested"));
+    await savePendingWrite(testPendingWrite("expired-1", "2099-05-03T09:00:00.000Z"));
+    await savePendingWrite(testPendingWrite("future-1", "2099-05-03T11:00:00.000Z"));
+    await savePendingWrite(testPendingWrite("claimed-1", "2099-05-03T09:00:00.000Z"));
+    await claimPendingWrite("claimed-1", new Date("2099-05-03T08:00:00.000Z"));
+    await writeFile(path.join(paths.pendingWritesDir, "malformed.json"), "{", "utf8");
     await writeFile(
-      path.join(paths.confirmationsDir, "expired-1.json"),
-      JSON.stringify(testConfirmation("expired-1", "2026-05-03T09:00:00.000Z")),
-      "utf8"
-    );
-    await writeFile(
-      path.join(paths.confirmationsDir, "future-1.json"),
-      JSON.stringify(testConfirmation("future-1", "2026-05-03T11:00:00.000Z")),
-      "utf8"
-    );
-    await writeFile(path.join(paths.confirmationsDir, "malformed.json"), "{", "utf8");
-    await writeFile(
-      path.join(paths.confirmationsDir, "bad_id.json"),
-      JSON.stringify(testConfirmation("bad_id", "2026-05-03T09:00:00.000Z")),
+      path.join(paths.pendingWritesDir, "bad_id.json"),
+      JSON.stringify(testPendingWrite("bad_id", "2099-05-03T09:00:00.000Z")),
       "utf8"
     );
 
-    await expect(deleteExpiredConfirmations(new Date("2026-05-03T10:00:00.000Z"))).resolves.toBe(1);
-    await expect(readdir(paths.confirmationsDir)).resolves.toEqual(expect.arrayContaining([
+    await expect(deleteExpiredPendingWrites(new Date("2099-05-03T10:00:00.000Z"))).resolves.toBe(2);
+    await expect(readdir(paths.pendingWritesDir)).resolves.toEqual(expect.arrayContaining([
       "bad_id.json",
+      "claimed-1.claimed.json",
       "future-1.json",
-      "malformed.json",
       "nested"
     ]));
-    await expect(readdir(paths.confirmationsDir)).resolves.not.toContain("expired-1.json");
+    await expect(readdir(paths.pendingWritesDir)).resolves.not.toContain("expired-1.json");
+    await expect(readdir(paths.pendingWritesDir)).resolves.not.toContain("malformed.json");
+  });
+
+  it("invalidates and removes legacy confirmation records during migration", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
+    tempDirs.push(tempDir);
+    process.env.PROPPOTSDAM_DATA_DIR = tempDir;
+    vi.resetModules();
+
+    const legacyDir = path.join(tempDir, "confirmations");
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(path.join(legacyDir, "old-confirmation.json"), "{}", "utf8");
+    const { ensureStorageDirs, paths } = await import("../src/storage.js");
+
+    await ensureStorageDirs();
+    await expect(readdir(tempDir)).resolves.not.toContain(path.basename(paths.legacyConfirmationsDir));
   });
 });
 
-function testConfirmation(confirmationId: string, expiresAt = "2099-01-01T00:00:00.000Z") {
+function testPendingWrite(pendingWriteHandle: string, expiresAt = "2099-01-01T00:00:00.000Z"): PendingPortalWrite {
   return {
-    confirmationId,
+    pendingWriteHandle,
+    state: "staged",
+    accountId: "MAX",
+    domain: "profile_account_setting",
     actionId: "save_partner",
     actionTitle: "Speichern",
     recordId: "PROFILE-1",
     recordTitle: "Meine Daten",
     xuclass: "ESQ_IA_PART",
     serviceUrl: "/profile-service",
+    contractFingerprint: "contract-fingerprint",
     values: { phone_ref: "+15550100001" },
     diff: [{
       name: "phone_ref",

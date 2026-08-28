@@ -24,7 +24,7 @@ export interface DoctorReport {
     configFile: string;
     tracesDir: string;
     exportsDir: string;
-    confirmationsDir: string;
+    pendingWritesDir: string;
   };
   config: {
     baseUrl: string;
@@ -89,7 +89,7 @@ export async function createDoctorReport(options: DoctorOptions = {}): Promise<D
       configFile: paths.configFile,
       tracesDir: paths.tracesDir,
       exportsDir: paths.exportsDir,
-      confirmationsDir: paths.confirmationsDir
+      pendingWritesDir: paths.pendingWritesDir
     },
     config: {
       baseUrl: safeUrl(config.baseUrl),

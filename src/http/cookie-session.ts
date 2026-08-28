@@ -1,5 +1,8 @@
 import { CookieJar } from "tough-cookie";
+import { AUTHENTICATE_PATH } from "../constants.js";
 import type { PortalConfig, StoredSession } from "../types.js";
+import type { PortalWritePermit } from "./write-permit.js";
+import { consumePortalWritePermit } from "./write-permit.js";
 
 export interface HttpResponse<T = string> {
   status: number;
@@ -35,10 +38,12 @@ export class CookieSession {
   }
 
   async get(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse> {
+    this.assertReadOnlyGet(pathOrUrl);
     return this.request(pathOrUrl, { ...init, method: "GET" });
   }
 
   async getBinary(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse<Uint8Array>> {
+    this.assertReadOnlyGet(pathOrUrl);
     const response = await this.requestRaw(pathOrUrl, { ...init, method: "GET" });
     await this.storeCookies(response, this.buildUrl(pathOrUrl));
     this.captureCsrf(response);
@@ -53,10 +58,26 @@ export class CookieSession {
   }
 
   async post(pathOrUrl: string, body?: BodyInit, init: RequestInit = {}): Promise<HttpResponse> {
+    this.assertAuthenticationPost(pathOrUrl);
     return this.request(pathOrUrl, { ...init, body, method: "POST" });
   }
 
-  async request(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse> {
+  async writeGet(permit: PortalWritePermit, pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse> {
+    consumePortalWritePermit(permit, "GET", this.buildUrl(pathOrUrl));
+    return this.request(pathOrUrl, { ...init, method: "GET" });
+  }
+
+  async writePost(
+    permit: PortalWritePermit,
+    pathOrUrl: string,
+    body?: BodyInit,
+    init: RequestInit = {}
+  ): Promise<HttpResponse> {
+    consumePortalWritePermit(permit, "POST", this.buildUrl(pathOrUrl));
+    return this.request(pathOrUrl, { ...init, body, method: "POST" });
+  }
+
+  private async request(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse> {
     const response = await this.requestRaw(pathOrUrl, init);
     await this.storeCookies(response, this.buildUrl(pathOrUrl));
     this.captureCsrf(response);
@@ -81,6 +102,24 @@ export class CookieSession {
     }
   }
 
+  private assertReadOnlyGet(pathOrUrl: string): void {
+    const url = new URL(this.buildUrl(pathOrUrl));
+    if (url.searchParams.get("command") !== "action") {
+      return;
+    }
+    const name = url.searchParams.get("name")?.toLowerCase();
+    if (name !== "boxlist" && name !== "get") {
+      throw new Error(`Portal action '${name ?? "unknown"}' requires an internal write permit.`);
+    }
+  }
+
+  private assertAuthenticationPost(pathOrUrl: string): void {
+    const url = new URL(this.buildUrl(pathOrUrl));
+    if (url.pathname !== AUTHENTICATE_PATH) {
+      throw new Error("Portal POST requests require an internal write permit unless they authenticate a session.");
+    }
+  }
+
   private async requestRaw(pathOrUrl: string, init: RequestInit): Promise<Response> {
     const url = this.buildUrl(pathOrUrl);
     const headers = new Headers(init.headers);
@@ -93,7 +132,7 @@ export class CookieSession {
     }
     headers.set("oppc-id", this.config.clientId);
     headers.set("UTC", String(Date.now()));
-    headers.set("user-agent", "propotsdam-mcp/0.1");
+    headers.set("user-agent", "propotsdam-mcp/0.2");
 
     return this.fetchImpl(url, {
       ...init,

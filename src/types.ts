@@ -234,6 +234,20 @@ export interface PreparedPortalAttachment {
   uploadEndpoint?: string;
 }
 
+export interface StagedPortalAttachment extends PreparedPortalAttachment {
+  sha256: string;
+}
+
+export interface PortalAttachmentReview {
+  fieldName: string;
+  fieldLabel?: string;
+  filename: string;
+  mimeType: "image/jpeg" | "image/png";
+  byteLength: number;
+  sha256: string;
+  uploadSupported: boolean;
+}
+
 export interface PortalAction {
   id: string;
   serviceId?: string;
@@ -309,21 +323,34 @@ export interface PreparedPortalAction {
   };
 }
 
-export interface PortalActionCommitRequest {
+export interface PortalActionDiffEntry {
+  name: string;
+  label?: string;
+  currentValue?: string;
+  proposedValue: string;
+}
+
+export interface PortalWriteTargetReview {
+  accountId: string;
+  domain: PortalWriteDomain;
+  serviceId?: string;
+  serviceTitle?: string;
+  recordId?: string;
+  recordTitle?: string;
+}
+
+export interface StagedPortalActionResult {
   ok: boolean;
   actionId: string;
   actionTitle?: string;
-  confirmationId?: string;
+  pendingWriteHandle?: string;
   expiresAt?: string;
+  requiresExplicitApproval: boolean;
+  target?: PortalWriteTargetReview;
   summary: string;
   validationIssues: string[];
-  diff: Array<{
-    name: string;
-    label?: string;
-    currentValue?: string;
-    proposedValue: string;
-  }>;
-  attachments?: PreparedPortalAttachment[];
+  diff: PortalActionDiffEntry[];
+  attachments?: PortalAttachmentReview[];
 }
 
 export interface PortalActionCommitTarget {
@@ -373,7 +400,7 @@ export interface PortalWriteCapability {
   targetRequired: boolean;
   uploadSupported: boolean;
   liveCommitSupported: boolean;
-  executionPolicy: "draft_only_no_live_write" | "confirmation_required_live_commit";
+  executionPolicy: "draft_only_no_live_write" | "conversational_approval_required_live_commit";
 }
 
 export interface PreparedPortalWrite {
@@ -393,28 +420,67 @@ export interface PreparedPortalWrite {
   draft?: PreparedPortalAction["draft"];
 }
 
-export interface StoredPortalActionConfirmation {
-  confirmationId: string;
+export type PendingPortalWriteState = "staged" | "claimed";
+
+export interface PendingPortalWrite {
+  pendingWriteHandle: string;
+  state: PendingPortalWriteState;
+  accountId: string;
+  domain: PortalWriteDomain;
   actionId: string;
   actionTitle: string;
   serviceId?: string;
+  serviceTitle?: string;
   recordId?: string;
   recordTitle?: string;
   xuclass?: string;
   serviceUrl?: string;
+  contractFingerprint: string;
   values: Record<string, string>;
-  diff: PortalActionCommitRequest["diff"];
-  attachments?: PreparedPortalAttachment[];
+  diff: PortalActionDiffEntry[];
+  attachments?: StagedPortalAttachment[];
   createdAt: string;
   expiresAt: string;
+  claimedAt?: string;
 }
+
+export interface PendingPortalWriteSummary {
+  pendingWriteHandle: string;
+  accountId: string;
+  domain: PortalWriteDomain;
+  actionId: string;
+  actionTitle: string;
+  serviceId?: string;
+  serviceTitle?: string;
+  recordId?: string;
+  recordTitle?: string;
+  diff: PortalActionDiffEntry[];
+  attachments?: PortalAttachmentReview[];
+  createdAt: string;
+  expiresAt: string;
+  requiresExplicitApproval: true;
+}
+
+export interface PendingPortalWriteList {
+  items: PendingPortalWriteSummary[];
+}
+
+export interface CancelPendingWritesResult {
+  ok: boolean;
+  cancelledHandles: string[];
+  missingHandles: string[];
+}
+
+export type PortalWriteOutcome = "succeeded" | "notSent" | "rejected" | "outcomeUncertain";
 
 export interface PortalCommitResult {
   ok: boolean;
+  outcome: PortalWriteOutcome;
+  pendingWriteHandle: string;
   actionId: string;
   recordId?: string;
-  committedAt: string;
-  status: number;
+  completedAt: string;
+  status?: number;
   summary: string;
   portalMessage?: string;
   attachmentUploads?: Array<{
@@ -423,4 +489,12 @@ export interface PortalCommitResult {
     ok: boolean;
     status: number;
   }>;
+}
+
+export interface PortalCommitBatchResult {
+  ok: boolean;
+  partial: boolean;
+  attemptedCount: number;
+  counts: Record<PortalWriteOutcome, number>;
+  results: PortalCommitResult[];
 }

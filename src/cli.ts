@@ -12,17 +12,16 @@ import { createDoctorReport } from "./diagnostics.js";
 import type { DoctorReport } from "./diagnostics.js";
 import { createServer } from "./mcp.js";
 import { configureCredentials, PortalClient } from "./portal/portal-client.js";
-import { loadConfig, normalizeBaseUrl, paths } from "./storage.js";
+import { ensureStorageDirs, loadConfig, normalizeBaseUrl, paths } from "./storage.js";
 import type {
   AuthResult,
   CapabilityMap,
   InboxItem,
   ListResult,
   PortalAction,
-  PortalActionCommitRequest,
   PortalActionKind,
   PortalActionMap,
-  PortalCommitResult,
+  PortalCommitBatchResult,
   PortalConfig,
   PortalFileExportResult,
   PortalFileItem,
@@ -32,11 +31,12 @@ import type {
   PortalWriteDomain,
   PreparedPortalAction,
   PreparedPortalWrite,
+  StagedPortalActionResult,
   StructuredPortalRecord
 } from "./types.js";
 import { redactSecrets } from "./utils/redact.js";
 
-const TRUE_VALUES = new Set(["1", "true", "yes", "y", "on"]);
+const TRUE_VALUES = new Set(["1", "true", "yes", "y", "on", "ja", "j"]);
 
 export interface CliIo {
   write(text: string): void;
@@ -84,12 +84,13 @@ export interface CliPortalClient {
     actionId?: string;
   }): Promise<PreparedPortalWrite>;
   preparePortalAction?(id: string, values?: Record<string, unknown>): Promise<PreparedPortalAction>;
-  requestPortalActionCommit?(
+  stagePortalAction?(
     actionId: string,
     values?: Record<string, unknown>,
     options?: { recordId?: string; serviceId?: string }
-  ): Promise<PortalActionCommitRequest>;
-  commitPortalAction?(confirmationId: string): Promise<PortalCommitResult>;
+  ): Promise<StagedPortalActionResult>;
+  cancelPendingWrites?(pendingWriteHandles: string[]): Promise<unknown>;
+  commitPendingWrites?(pendingWriteHandles: string[]): Promise<PortalCommitBatchResult>;
 }
 
 export interface CliDeps {
@@ -134,6 +135,7 @@ export async function runCli(
     const command = normalizeGroup(parsed.positionals[0]!);
     switch (command) {
       case "serve":
+        await ensureStorageDirs();
         await createServer().connect(new StdioServerTransport());
         return 0;
       case "auth":
@@ -349,7 +351,13 @@ async function handleActions(parsed: ParsedArgs, io: CliIo, client: CliPortalCli
     await printValue(parsed, io, action, "Action");
     return;
   }
-  if (subcommand === "prepare" || subcommand === "request-commit") {
+  if (subcommand === "prepare" || subcommand === "send") {
+    if (subcommand === "send" && parsed.flags.has("yes")) {
+      throw new CliUsageError("actions send has no --yes bypass. Run it interactively and review the exact diff.");
+    }
+    if (subcommand === "send" && !io.isTty) {
+      throw new CliUsageError("actions send requires an interactive terminal. Non-interactive portal writes are refused.");
+    }
     const id = parsed.positionals[2] ?? await chooseListItem(
       parsed,
       io,
@@ -368,25 +376,30 @@ async function handleActions(parsed: ParsedArgs, io: CliIo, client: CliPortalCli
       );
       return;
     }
-    await printValue(
-      parsed,
-      io,
-      await requireClientMethod(client.requestPortalActionCommit, "actions request-commit").call(client, id, values, commitTarget(parsed)),
-      "Action Commit Request"
+    const staged = await requireClientMethod(client.stagePortalAction, "actions send").call(
+      client,
+      id,
+      values,
+      commitTarget(parsed)
     );
-    return;
-  }
-  if (subcommand === "commit") {
-    const confirmationId = parsed.positionals[2];
-    if (!confirmationId) {
-      throw new CliUsageError("Missing confirmation id. Usage: actions commit <confirmation-id>");
+    printStagedActionReview(parsed, io, staged);
+    if (!staged.ok || !staged.pendingWriteHandle) {
+      return;
     }
-    await printValue(
-      parsed,
-      io,
-      await requireClientMethod(client.commitPortalAction, "actions commit").call(client, confirmationId),
-      "Action Commit"
-    );
+    let answer: string;
+    try {
+      answer = await io.question("Send this exact change to ProPotsdam? [y/N] ");
+    } catch (error) {
+      await requireClientMethod(client.cancelPendingWrites, "actions send").call(client, [staged.pendingWriteHandle]);
+      throw error;
+    }
+    if (!TRUE_VALUES.has(answer.trim().toLowerCase())) {
+      await requireClientMethod(client.cancelPendingWrites, "actions send").call(client, [staged.pendingWriteHandle]);
+      writeOutput(io, "Cancelled. No portal write was sent.\n");
+      return;
+    }
+    const committed = await requireClientMethod(client.commitPendingWrites, "actions send").call(client, [staged.pendingWriteHandle]);
+    await printValue(parsed, io, omitPendingWriteHandles(committed), "Action Send Result");
     return;
   }
   throw new CliUsageError(`Unknown actions command '${subcommand}'.\n\n${actionsHelp(parsed.binary)}`);
@@ -691,6 +704,56 @@ function commitTarget(parsed: ParsedArgs): { recordId?: string; serviceId?: stri
   };
 }
 
+function printStagedActionReview(parsed: ParsedArgs, io: CliIo, staged: StagedPortalActionResult): void {
+  const visible = omitPendingWriteHandles(staged);
+  if (parsed.json) {
+    writeOutput(io, `${JSON.stringify(redactForCli(visible), null, 2)}\n`);
+    return;
+  }
+  writeOutput(io, "Review exact portal change\n");
+  writeOutput(io, `  Action: ${staged.actionTitle ?? staged.actionId}\n`);
+  if (staged.target) {
+    writeOutput(io, `  Account: ${staged.target.accountId}\n`);
+    writeOutput(io, `  Service: ${staged.target.serviceTitle ?? staged.target.serviceId ?? "(unknown)"}\n`);
+    if (staged.target.recordTitle || staged.target.recordId) {
+      writeOutput(io, `  Target: ${staged.target.recordTitle ?? staged.target.recordId}\n`);
+    }
+  }
+  if (staged.diff.length === 0) {
+    writeOutput(io, "  No field changes.\n");
+  } else {
+    for (const entry of staged.diff) {
+      writeOutput(
+        io,
+        `  ${entry.label ?? entry.name}: ${entry.currentValue ?? "(empty)"} -> ${entry.proposedValue}\n`
+      );
+    }
+  }
+  for (const attachment of staged.attachments ?? []) {
+    writeOutput(
+      io,
+      `  ${attachment.fieldLabel ?? attachment.fieldName}: ${attachment.filename} (${attachment.mimeType}, ${attachment.byteLength} bytes, sha256 ${attachment.sha256})\n`
+    );
+  }
+  if (!staged.ok) {
+    writeOutput(io, formatDetails(redactForCli(visible)));
+  }
+}
+
+function omitPendingWriteHandles(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(omitPendingWriteHandles);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !key.toLowerCase().includes("handle"))
+      .map(([key, entry]) => [key, omitPendingWriteHandles(entry)])
+  );
+}
+
 function writeFilter(parsed: ParsedArgs): { domain?: PortalWriteDomain; serviceId?: string; xuclass?: string } {
   return {
     ...recordFilter(parsed),
@@ -982,7 +1045,7 @@ function topLevelHelp(binary: string): string {
   ${binary} inbox <list|get> [options]
   ${binary} records <list|get|raw> [options]
   ${binary} files <list|export> [options]
-  ${binary} actions <discover|list|show|prepare|request-commit|commit> [options]
+  ${binary} actions <discover|list|show|prepare|send> [options]
   ${binary} writes <list|prepare> [options]
 
 Aliases:
@@ -1045,8 +1108,9 @@ function actionsHelp(binary: string): string {
   ${binary} actions list [--kind <kind>] [--source <boxlist|detail>] [--record-id <id>] [--json]
   ${binary} actions show [id] [--json]
   ${binary} actions prepare [id] [--attachment-file <path>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
-  ${binary} actions request-commit [id] [--record-id <id>] [--service-id <id>] [--attachment-file <path>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
-  ${binary} actions commit <confirmation-id> [--json]
+  ${binary} actions send [id] [--record-id <id>] [--service-id <id>] [--attachment-file <path>] [--value key=value] [--values-json <json>] [--values-file <path>] [--json]
+
+actions send always shows the exact diff and asks interactively before sending. It refuses non-interactive use and has no --yes bypass.
 
 Alias: ${binary} aktionen ...
 `;
