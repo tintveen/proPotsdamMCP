@@ -19,7 +19,7 @@ This project is pre-1.0. Security fixes are handled on the current mainline vers
 
 ## Local Sensitive Data
 
-By default, the password is stored in the macOS Keychain under the `propotsdam-mcp` service. Local config, session cookies, traces, ProPotsdam pending writes and temporary staged attachments, external-workflow confirmations and normalized report photos, and exports live under:
+By default, the password is stored in the macOS Keychain under the `propotsdam-mcp` service. Local config, session cookies, traces, shared pending actions and their temporary staged attachments or normalized report photos, and exports live under:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/
@@ -27,7 +27,7 @@ By default, the password is stored in the macOS Keychain under the `propotsdam-m
 
 Remove or redact this data before sharing logs, traces, test fixtures, or issue details.
 
-Pending ProPotsdam writes expire after ten minutes and are integrity-bound to the reviewed account, target, values, form contract, and attachment hashes. Ordinary transport methods reject portal action writes; a successfully claimed pending write is required to issue the internal permit accepted by the write transport. The LLM or MCP host—not the MCP server—is responsible for waiting for explicit conversational approval before calling the destructive commit tool. Tool annotations are advisory and do not independently enforce consent. Once a state-changing request may have been dispatched, the server consumes the pending write and never retries it automatically.
+Every pending action expires after ten minutes and is stored in a versioned HMAC envelope bound to its kind, destination, reviewed payload, remote contract, and artifact hashes. Records persist safely across restarts and transition atomically from `staged` to `claimed`. Portal actions additionally remain bound to the authenticated account, target, values, and form contract, and ordinary transport methods reject portal writes without a claimed action's internal permit. The LLM or MCP host—not the MCP server—is responsible for showing the full review, yielding, and waiting for explicit conversational approval before calling the destructive generic commit tool. A UI may create a visible user-authored approval message but may not call commit directly. Tool annotations are advisory and do not independently enforce consent. Once a state-changing request may have been dispatched, the server consumes the pending action and never retries it automatically.
 
 ## External Waste Services
 
@@ -35,6 +35,6 @@ STEP pickup requests transmit contact details, the contact and pickup addresses,
 
 External form sessions use separate, origin-pinned cookie jars. Easysquare cookies, CSRF values, credentials, and headers must never be forwarded to STEP, Potsdam, or the geocoding service. Hidden external form values and raw response bodies must not be logged or returned through MCP.
 
-External writes require a one-time confirmation id that expires after ten minutes. Abandoned-waste photos are decoded with resource limits, auto-oriented, resized when needed, and re-encoded as metadata-free JPEG. The exact normalized files are kept with private filesystem permissions only for the confirmation lifetime and removed after expiry or a commit attempt.
+External writes use the same hidden pending-action handles as ProPotsdam portal writes; there is no separate confirmation-id API. Abandoned-waste photos are decoded with resource limits, auto-oriented, resized when needed, and re-encoded as metadata-free JPEG. The exact normalized files are stored beneath their pending handle with private filesystem permissions and removed after commit, cancellation, expiry, failed staging, or invalid-record cleanup.
 
-If an external write has an ambiguous network outcome, the confirmation remains consumed and the client does not retry automatically. Check for the STEP response or Potsdam activation email before creating a replacement request.
+If an external write has an ambiguous network outcome, the pending action remains consumed and the client does not retry automatically. Check for the STEP response or Potsdam activation email before staging a replacement request.

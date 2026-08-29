@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/mcp.js";
+import type { PendingWriteServiceLike } from "../src/pending-write-service.js";
 import { PortalClient } from "../src/portal/portal-client.js";
 import type { WasteServiceLike } from "../src/waste/types.js";
 
@@ -23,8 +24,6 @@ describe("MCP server", () => {
       "propotsdam_auth_logout",
       "propotsdam_auth_status",
       "propotsdam_cancel_pending_writes",
-      "propotsdam_commit_abandoned_waste_report",
-      "propotsdam_commit_bulky_waste_pickup",
       "propotsdam_commit_pending_writes",
       "propotsdam_discover_capabilities",
       "propotsdam_discover_write_actions",
@@ -43,8 +42,8 @@ describe("MCP server", () => {
       "propotsdam_prepare_bulky_waste_pickup",
       "propotsdam_prepare_portal_action",
       "propotsdam_prepare_portal_write",
-      "propotsdam_request_abandoned_waste_report_commit",
-      "propotsdam_request_bulky_waste_pickup_commit",
+      "propotsdam_stage_abandoned_waste_report",
+      "propotsdam_stage_bulky_waste_pickup",
       "propotsdam_stage_portal_action",
       "propotsdam_list_portal_records"
     ].sort());
@@ -53,7 +52,7 @@ describe("MCP server", () => {
       expect.arrayContaining(["proPotsdam auth status", "proPotsdam list portal records"])
     );
     expect(Object.values(tools).every((tool) => tool.title?.startsWith("proPotsdam "))).toBe(true);
-    expect(inspected.server._serverInfo.version).toBe("0.2.0");
+    expect(inspected.server._serverInfo.version).toBe("0.3.0");
     expect(tools.propotsdam_request_portal_action_commit).toBeUndefined();
     expect(tools.propotsdam_commit_portal_action).toBeUndefined();
 
@@ -90,6 +89,12 @@ describe("MCP server", () => {
     expect(prepareWriteTool.inputSchema?.safeParse({ domain: "password_change", values: { currentPassword: "x", newPassword: "y" } }).success).toBe(true);
     expect(prepareWriteTool.inputSchema?.safeParse({ domain: "repair_report", attachmentFilePath: "/tmp/photo.jpg" }).success).toBe(true);
     expect(prepareWriteTool.inputSchema?.safeParse({ domain: "" }).success).toBe(false);
+    expect(prepareWriteTool.annotations).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true
+    });
 
     const prepareTool = tools.propotsdam_prepare_portal_action!;
     expect(prepareTool.inputSchema?.safeParse({ id: "A-1", values: { description: "x" }, attachmentFilePath: "/tmp/photo.jpg" }).success).toBe(true);
@@ -131,26 +136,38 @@ describe("MCP server", () => {
       items: [{ kind: "not-supported", quantity: 1 }]
     }).success).toBe(false);
 
-    const requestWasteReportTool = tools.propotsdam_request_abandoned_waste_report_commit!;
-    expect(requestWasteReportTool.inputSchema?.safeParse({
+    const stageWasteReportTool = tools.propotsdam_stage_abandoned_waste_report!;
+    expect(stageWasteReportTool.inputSchema?.safeParse({
       description: "Abgestelltes Bett neben den Mülltonnen.",
       photoPaths: ["/tmp/pile.jpg"],
       privacyConsent: true,
       location: { latitude: 52.4, longitude: 13.05 }
     }).success).toBe(true);
-    expect(requestWasteReportTool.inputSchema?.safeParse({
+    expect(stageWasteReportTool.inputSchema?.safeParse({
       description: "x",
       photoPaths: [],
       privacyConsent: false
     }).success).toBe(false);
 
-    expect(tools.propotsdam_commit_bulky_waste_pickup?.inputSchema?.safeParse({
-      confirmationId: "11111111-1111-4111-8111-111111111111"
-    }).success).toBe(true);
-    expect(tools.propotsdam_commit_abandoned_waste_report?.inputSchema?.safeParse({ confirmationId: "" }).success).toBe(false);
+    expect(tools.propotsdam_request_bulky_waste_pickup_commit).toBeUndefined();
+    expect(tools.propotsdam_commit_bulky_waste_pickup).toBeUndefined();
+    expect(tools.propotsdam_request_abandoned_waste_report_commit).toBeUndefined();
+    expect(tools.propotsdam_commit_abandoned_waste_report).toBeUndefined();
+    expect(tools.propotsdam_stage_bulky_waste_pickup?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
+    });
+    expect(tools.propotsdam_cancel_pending_writes?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false
+    });
   });
 
-  it("delegates waste tools to the separately injected waste service", async () => {
+  it("delegates waste staging and generic commit to their injected services", async () => {
     const wasteService: WasteServiceLike = {
       prepareBulkyWastePickup: vi.fn(async () => ({
         ok: true as const,
@@ -164,21 +181,48 @@ describe("MCP server", () => {
         review: ["Bed pickup preview"],
         privacyUrls: []
       })),
-      requestBulkyWastePickupCommit: vi.fn(),
-      commitBulkyWastePickup: vi.fn(),
-      prepareAbandonedWasteReport: vi.fn(),
-      requestAbandonedWasteReportCommit: vi.fn(),
-      commitAbandonedWasteReport: vi.fn(async (confirmationId) => ({
+      stageBulkyWastePickup: vi.fn(async () => ({
         ok: true as const,
-        workflow: "abandoned_waste_report" as const,
-        state: "awaiting_email_confirmation" as const,
-        committedAt: "2026-08-15T10:00:00.000Z",
-        status: 200,
-        summary: `Committed ${confirmationId}`
+        workflow: "bulky_waste_pickup" as const,
+        kind: "swp_bulky_waste" as const,
+        pendingWriteHandle: "opaque-waste-1",
+        createdAt: "2026-08-15T10:00:00.000Z",
+        expiresAt: "2026-08-15T10:10:00.000Z",
+        requiresExplicitApproval: true as const,
+        validationIssues: [],
+        warnings: [],
+        review: ["Bed pickup review"],
+        privacyUrls: []
+      })),
+      prepareAbandonedWasteReport: vi.fn(),
+      stageAbandonedWasteReport: vi.fn(),
+      commitPendingWrite: vi.fn()
+    };
+    const pendingWriteService: PendingWriteServiceLike = {
+      listPendingWrites: vi.fn(),
+      cancelPendingWrites: vi.fn(),
+      commitPendingWrites: vi.fn(async (pendingWriteHandles) => ({
+        ok: true,
+        partial: false,
+        attemptedCount: 1,
+        counts: { succeeded: 1, notSent: 0, rejected: 0, outcomeUncertain: 0 },
+        results: [{
+          ok: true,
+          outcome: "succeeded" as const,
+          pendingWriteHandle: pendingWriteHandles[0]!,
+          kind: "swp_bulky_waste" as const,
+          workflow: "bulky_waste_pickup" as const,
+          completedAt: "2026-08-15T10:01:00.000Z",
+          summary: "STEP received the request.",
+          state: "request_received" as const
+        }]
       }))
     };
-    const server = createServer(new PortalClient(), wasteService) as unknown as {
-      _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ structuredContent?: Record<string, unknown> }> }>;
+    const server = createServer(new PortalClient(), wasteService, pendingWriteService) as unknown as {
+      _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{
+        content?: Array<{ text: string }>;
+        structuredContent?: Record<string, unknown>;
+      }> }>;
     };
 
     const input = {
@@ -189,9 +233,19 @@ describe("MCP server", () => {
     expect(wasteService.prepareBulkyWastePickup).toHaveBeenCalledWith(input);
     expect(prepared.structuredContent).toMatchObject({ ok: true, review: ["Bed pickup preview"] });
 
-    const committed = await server._registeredTools.propotsdam_commit_abandoned_waste_report!.handler({ confirmationId: "confirmation-1" });
-    expect(wasteService.commitAbandonedWasteReport).toHaveBeenCalledWith("confirmation-1");
-    expect(committed.structuredContent).toMatchObject({ state: "awaiting_email_confirmation" });
+    const staged = await server._registeredTools.propotsdam_stage_bulky_waste_pickup!.handler(input);
+    expect(wasteService.stageBulkyWastePickup).toHaveBeenCalledWith(input);
+    expect(staged.structuredContent).toMatchObject({ pendingWriteHandle: "opaque-waste-1" });
+    expect(staged.content?.[0]?.text).not.toContain("opaque-waste-1");
+    expect(staged.content?.[0]?.text).not.toContain("pendingWriteHandle");
+
+    const committed = await server._registeredTools.propotsdam_commit_pending_writes!.handler({
+      pendingWriteHandles: ["opaque-waste-1"]
+    });
+    expect(pendingWriteService.commitPendingWrites).toHaveBeenCalledWith(["opaque-waste-1"]);
+    expect(committed.structuredContent).toMatchObject({
+      results: [{ state: "request_received" }]
+    });
   });
 
   it("keeps pending-write handles in structured tool data but out of human text", async () => {
@@ -231,6 +285,8 @@ describe("MCP server", () => {
       _registeredTools: Record<string, { description?: string }>;
     };
     const stageDescription = server._registeredTools.propotsdam_stage_portal_action!.description!;
+    const stageWasteDescription = server._registeredTools.propotsdam_stage_bulky_waste_pickup!.description!;
+    const stagePublicReportDescription = server._registeredTools.propotsdam_stage_abandoned_waste_report!.description!;
     const commitDescription = server._registeredTools.propotsdam_commit_pending_writes!.description!;
 
     expect(stageDescription).toMatch(/stop.*wait for a new user message/i);
@@ -238,8 +294,11 @@ describe("MCP server", () => {
     expect(stageDescription).toContain("ja, abschicken");
     expect(stageDescription).toMatch(/Okay.*insufficient/i);
     expect(stageDescription).toMatch(/change.*newly staged/i);
+    expect(stageWasteDescription).toMatch(/stop.*wait for explicit approval.*new user message/i);
+    expect(stagePublicReportDescription).toMatch(/location, description, and normalized photos may become public/i);
     expect(commitDescription).toMatch(/named subset.*entire displayed batch/i);
     expect(commitDescription).toMatch(/LLM is the approval trust boundary/i);
     expect(commitDescription).toMatch(/cannot inspect the conversation/i);
+    expect(commitDescription).toMatch(/UI control.*visible user-authored approval message.*never call this tool directly/i);
   });
 });

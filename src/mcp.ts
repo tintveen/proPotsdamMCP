@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import { PortalError } from "./errors.js";
+import { PendingWriteService, type PendingWriteServiceLike } from "./pending-write-service.js";
 import { PortalClient } from "./portal/portal-client.js";
 import { redactSecrets } from "./utils/redact.js";
 import { WasteService } from "./waste/waste-service.js";
@@ -54,11 +55,12 @@ const WRITE_DOMAIN_VALUES = [
 
 export function createServer(
   client = new PortalClient(),
-  wasteService: WasteServiceLike = new WasteService(client)
+  wasteService: WasteServiceLike = new WasteService(client),
+  pendingWriteService: PendingWriteServiceLike = new PendingWriteService(client, wasteService)
 ): McpServer {
   const server = new McpServer({
     name: "proPotsdam MCP",
-    version: "0.2.0"
+    version: "0.3.0"
   });
 
   registerJsonTool(server, "propotsdam_auth_status", {
@@ -174,7 +176,8 @@ export function createServer(
       actionId: z.string().min(1).optional(),
       attachmentFilePath: z.string().min(1).optional(),
       values: z.record(z.string(), z.unknown()).optional()
-    }
+    },
+    annotations: readOnlyAnnotations
   }), async (input) => wrapTool(() => client.preparePortalWrite({
     ...input,
     values: mergeAttachmentFilePath(input.values, input.attachmentFilePath)
@@ -186,7 +189,8 @@ export function createServer(
       id: z.string().min(1),
       attachmentFilePath: z.string().min(1).optional(),
       values: z.record(z.string(), z.unknown()).optional()
-    }
+    },
+    annotations: readOnlyAnnotations
   }), async ({ id, values, attachmentFilePath }) => wrapTool(() =>
     client.preparePortalAction(id, mergeAttachmentFilePath(values, attachmentFilePath))
   ));
@@ -199,6 +203,12 @@ export function createServer(
       serviceId: z.string().min(1).optional(),
       attachmentFilePath: z.string().min(1).optional(),
       values: z.record(z.string(), z.unknown()).optional()
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
     }
   }), async ({ actionId, recordId, serviceId, values, attachmentFilePath }) => wrapTool(() =>
     client.stagePortalAction(actionId, mergeAttachmentFilePath(values, attachmentFilePath), { recordId, serviceId }),
@@ -206,21 +216,33 @@ export function createServer(
   ));
 
   registerJsonTool(server, "propotsdam_list_pending_writes", {
-    description: "List safe summaries of active pending writes for LLM/tool coordination. Internal handles are structured data and must not be shown to users."
-  }, async () => client.listPendingWrites(), { hidePendingWriteHandles: true });
+    description: "List every active ProPotsdam, STEP, and Potsdam pending action exactly once. Internal handles are structured data and must not be shown to users.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
+  }, async () => pendingWriteService.listPendingWrites(), { hidePendingWriteHandles: true });
 
   server.registerTool("propotsdam_cancel_pending_writes", withToolTitle("propotsdam_cancel_pending_writes", {
-    description: "Cancel selected pending writes locally without contacting ProPotsdam.",
+    description: "Cancel selected pending actions locally and delete their staged artifacts without contacting ProPotsdam, STEP, or Potsdam.",
     inputSchema: {
       pendingWriteHandles: z.array(z.string().min(1)).min(1)
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false
     }
   }), async ({ pendingWriteHandles }) => wrapTool(
-    () => client.cancelPendingWrites(pendingWriteHandles),
+    () => pendingWriteService.cancelPendingWrites(pendingWriteHandles),
     { hidePendingWriteHandles: true }
   ));
 
   server.registerTool("propotsdam_commit_pending_writes", withToolTitle("propotsdam_commit_pending_writes", {
-    description: "Perform one or more staged portal writes only after the user explicitly approved the exact displayed draft, named subset, or entire displayed batch in a new natural-language message. The LLM is the approval trust boundary; this server cannot inspect the conversation. Every supplied item runs independently even after failure and must never be retried automatically after dispatch.",
+    description: "Perform one or more staged ProPotsdam, STEP, or Potsdam actions only after the user explicitly approved the exact displayed action, named subset, or entire displayed batch in a new natural-language message. The LLM is the approval trust boundary; this server cannot inspect the conversation. A UI control may only create a normal visible user-authored approval message and may never call this tool directly. Every supplied item runs sequentially and independently even after failure and must never be retried automatically after possible dispatch.",
     inputSchema: {
       pendingWriteHandles: z.array(z.string().min(1)).min(1)
     },
@@ -231,39 +253,39 @@ export function createServer(
       openWorldHint: true
     }
   }), async ({ pendingWriteHandles }) => wrapTool(
-    () => client.commitPendingWrites(pendingWriteHandles),
+    () => pendingWriteService.commitPendingWrites(pendingWriteHandles),
     { hidePendingWriteHandles: true }
   ));
 
   server.registerTool("propotsdam_prepare_bulky_waste_pickup", withToolTitle("propotsdam_prepare_bulky_waste_pickup", {
     description: "Preview a STEP bulky-waste pickup request without creating a pickup request.",
-    inputSchema: bulkyWasteInputSchema
+    inputSchema: bulkyWasteInputSchema,
+    annotations: readOnlyAnnotations
   }), async (input) => wrapTool(() => wasteService.prepareBulkyWastePickup(input)));
 
-  server.registerTool("propotsdam_request_bulky_waste_pickup_commit", withToolTitle("propotsdam_request_bulky_waste_pickup_commit", {
-    description: "Create a short-lived confirmation for a reviewed STEP bulky-waste pickup request.",
-    inputSchema: bulkyWasteInputSchema
-  }), async (input) => wrapTool(() => wasteService.requestBulkyWastePickupCommit(input)));
-
-  server.registerTool("propotsdam_commit_bulky_waste_pickup", withToolTitle("propotsdam_commit_bulky_waste_pickup", {
-    description: "Commit a previously confirmed STEP bulky-waste pickup request by confirmation id.",
-    inputSchema: confirmationInputSchema
-  }), async ({ confirmationId }) => wrapTool(() => wasteService.commitBulkyWastePickup(confirmationId)));
+  server.registerTool("propotsdam_stage_bulky_waste_pickup", withToolTitle("propotsdam_stage_bulky_waste_pickup", {
+    description: "Stage an immutable STEP bulky-waste pickup action without sending it. Show the complete returned review, stop, and wait for explicit approval in a new user message before using the generic commit tool.",
+    inputSchema: bulkyWasteInputSchema,
+    annotations: stageAnnotations
+  }), async (input) => wrapTool(
+    () => wasteService.stageBulkyWastePickup(input),
+    { hidePendingWriteHandles: true }
+  ));
 
   server.registerTool("propotsdam_prepare_abandoned_waste_report", withToolTitle("propotsdam_prepare_abandoned_waste_report", {
     description: "Preview a Potsdam abandoned-waste report without creating a city report.",
-    inputSchema: abandonedWasteInputSchema
+    inputSchema: abandonedWasteInputSchema,
+    annotations: readOnlyAnnotations
   }), async (input) => wrapTool(() => wasteService.prepareAbandonedWasteReport(input)));
 
-  server.registerTool("propotsdam_request_abandoned_waste_report_commit", withToolTitle("propotsdam_request_abandoned_waste_report_commit", {
-    description: "Create a short-lived confirmation for a reviewed Potsdam abandoned-waste report.",
-    inputSchema: abandonedWasteInputSchema
-  }), async (input) => wrapTool(() => wasteService.requestAbandonedWasteReportCommit(input)));
-
-  server.registerTool("propotsdam_commit_abandoned_waste_report", withToolTitle("propotsdam_commit_abandoned_waste_report", {
-    description: "Commit a previously confirmed Potsdam abandoned-waste report by confirmation id.",
-    inputSchema: confirmationInputSchema
-  }), async ({ confirmationId }) => wrapTool(() => wasteService.commitAbandonedWasteReport(confirmationId)));
+  server.registerTool("propotsdam_stage_abandoned_waste_report", withToolTitle("propotsdam_stage_abandoned_waste_report", {
+    description: "Stage an immutable Potsdam abandoned-waste report without sending it. Prominently show that its location, description, and normalized photos may become public, then stop and wait for explicit approval in a new user message before using the generic commit tool.",
+    inputSchema: abandonedWasteInputSchema,
+    annotations: stageAnnotations
+  }), async (input) => wrapTool(
+    () => wasteService.stageAbandonedWasteReport(input),
+    { hidePendingWriteHandles: true }
+  ));
 
   return server;
 }
@@ -358,10 +380,6 @@ const abandonedWasteInputSchema = {
   privacyConsent: z.literal(true)
 };
 
-const confirmationInputSchema = {
-  confirmationId: z.uuid()
-};
-
 function mergeAttachmentFilePath(values: Record<string, unknown> | undefined, attachmentFilePath: string | undefined): Record<string, unknown> {
   return attachmentFilePath ? { ...(values ?? {}), attachmentFilePath } : values ?? {};
 }
@@ -369,7 +387,7 @@ function mergeAttachmentFilePath(values: Record<string, unknown> | undefined, at
 function registerJsonTool<T>(
   server: McpServer,
   name: string,
-  config: { description: string },
+  config: { description: string; annotations?: ToolAnnotations },
   handler: () => Promise<T>,
   options: ToolResultOptions = {}
 ): void {
@@ -386,6 +404,27 @@ function withToolTitle<T extends { description: string }>(name: string, config: 
 interface ToolResultOptions {
   hidePendingWriteHandles?: boolean;
 }
+
+interface ToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
+const readOnlyAnnotations: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true
+};
+
+const stageAnnotations: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true
+};
 
 async function wrapTool<T>(handler: () => Promise<T>, options: ToolResultOptions = {}) {
   try {

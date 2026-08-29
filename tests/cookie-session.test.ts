@@ -56,6 +56,9 @@ function claimedPendingWrite(): PendingPortalWrite {
   return {
     pendingWriteHandle: "pending-1",
     state: "claimed",
+    kind: "portal_action",
+    workflow: "portal_action",
+    destination: "ProPotsdam customer portal",
     accountId: "MAX",
     domain: "repair_report",
     actionId: "cmdsend",
@@ -63,6 +66,9 @@ function claimedPendingWrite(): PendingPortalWrite {
     contractFingerprint: "contract",
     values: { msg_txt: "Synthetic repair" },
     diff: [{ name: "msg_txt", proposedValue: "Synthetic repair" }],
+    review: ["Synthetic repair"],
+    warnings: [],
+    privacyUrls: [],
     createdAt: "2026-08-28T12:00:00.000Z",
     expiresAt: "2026-08-28T12:10:00.000Z",
     claimedAt: "2026-08-28T12:01:00.000Z"

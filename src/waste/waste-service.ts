@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import {
   PotsdamWasteClient,
   PotsdamWasteError,
   stagePotsdamWastePhoto,
+  verifyStagedPotsdamWastePhoto,
   type PotsdamWasteClient as PotsdamWasteClientType,
   type PotsdamWasteConfig,
   type PotsdamWasteDraft,
@@ -23,15 +24,17 @@ import {
 import type { PortalDefaultsClient } from "./portal-defaults.js";
 import { PortalClientWasteDefaultsProvider } from "./portal-defaults.js";
 import {
-  WASTE_CONFIRMATION_VERSION,
-  WASTE_CONFIRMATION_TTL_MS,
-  claimWasteConfirmation,
-  deleteExpiredWasteConfirmations,
-  deleteWasteConfirmationArtifacts,
-  ensureWastePhotoStagingDir,
-  saveWasteConfirmation,
-  type StoredWasteConfirmation
-} from "./confirmation-storage.js";
+  PENDING_WRITE_TTL_MS,
+  claimPendingWrite,
+  deleteClaimedPendingWrite,
+  deleteExpiredPendingWrites,
+  deletePendingWrite,
+  deletePendingWriteArtifacts,
+  loadPendingWrite,
+  pendingWriteArtifactsDir,
+  savePendingWrite
+} from "../storage.js";
+import type { PendingWasteWrite, PendingWriteCommitResult, WriteOutcome } from "../types.js";
 import type {
   AbandonedWasteReportInput,
   BulkyWasteItem,
@@ -39,14 +42,12 @@ import type {
   PortalWasteDefaults,
   PortalWasteDefaultsProvider,
   WasteAddress,
-  WasteCommitRequest,
-  WasteCommitResult,
+  StagedWasteActionResult,
   WasteContactOverrides,
   WastePreparation,
   WasteServiceLike
 } from "./types.js";
 
-const CONFIRMATION_AUTH_KEY = randomBytes(32);
 const SWP_PRIVACY_URL = "https://www.swp-potsdam.de/content/entsorgung/pdf_4/step_datenschutzerhinweise_dsgvo.pdf";
 const SWP_FORM_URL = "https://www.swp-potsdam.de/de/entsorgung/sperrm%C3%BCllabholung/";
 const POTSDAM_PRIVACY_URL = "https://mitgestalten.potsdam.de/de/datenschutz";
@@ -90,19 +91,18 @@ export interface WasteServiceDependencies {
   swpClient?: SwpClientLike;
   potsdamClient?: PotsdamClientLike;
   now?: () => Date;
-  confirmationId?: () => string;
+  pendingWriteHandle?: () => string;
+  deleteClaimedPendingWrite?: typeof deleteClaimedPendingWrite;
 }
 
 interface PreparedSwpPayload {
   draft: ResolvedSwpDraft;
-  approvedDigest: string;
 }
 
 interface PreparedPotsdamPayload {
   draft: PotsdamWasteDraft;
   location: PotsdamWasteLocation;
   photos: PotsdamWastePhoto[];
-  approvedDigest: string;
 }
 
 export class WasteService implements WasteServiceLike {
@@ -110,113 +110,74 @@ export class WasteService implements WasteServiceLike {
   private readonly swpClient: SwpClientLike;
   private readonly potsdamClient: PotsdamClientLike;
   private readonly now: () => Date;
-  private readonly confirmationId: () => string;
-  private readonly cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly pendingWriteHandle: () => string;
+  private readonly cleanupClaimedPendingWrite: typeof deleteClaimedPendingWrite;
 
   constructor(portalClient: PortalDefaultsClient, dependencies: WasteServiceDependencies = {}) {
     this.defaultsProvider = dependencies.defaultsProvider ?? new PortalClientWasteDefaultsProvider(portalClient);
     this.swpClient = dependencies.swpClient ?? new SwpClient();
     this.potsdamClient = dependencies.potsdamClient ?? new PotsdamWasteClient();
     this.now = dependencies.now ?? (() => new Date());
-    this.confirmationId = dependencies.confirmationId ?? randomUUID;
+    this.pendingWriteHandle = dependencies.pendingWriteHandle ?? randomUUID;
+    this.cleanupClaimedPendingWrite = dependencies.deleteClaimedPendingWrite ?? deleteClaimedPendingWrite;
   }
 
   async prepareBulkyWastePickup(input: BulkyWastePickupInput): Promise<WastePreparation<ResolvedSwpDraft>> {
-    await this.maintainConfirmations();
     return this.resolveBulkyWastePickup(input);
   }
 
-  async requestBulkyWastePickupCommit(input: BulkyWastePickupInput): Promise<WasteCommitRequest> {
+  async stageBulkyWastePickup(input: BulkyWastePickupInput): Promise<StagedWasteActionResult> {
+    await this.maintainPendingWrites();
     const prepared = await this.resolveBulkyWastePickup(input);
     if (!prepared.ok || !prepared.draft || !prepared.remoteFingerprint) {
-      return commitRequestFromPreparation(prepared);
+      return stageResultFromPreparation("swp_bulky_waste", prepared);
     }
 
-    const confirmationId = this.confirmationId();
+    const pendingWriteHandle = this.pendingWriteHandle();
     const createdAt = this.now();
-    const expiresAt = new Date(createdAt.getTime() + WASTE_CONFIRMATION_TTL_MS);
-    const content = { draft: prepared.draft };
-    const payload: PreparedSwpPayload = {
-      ...content,
-      approvedDigest: approvalDigest("swp_bulky_waste", prepared.remoteFingerprint, content)
-    };
-    await this.maintainConfirmations(createdAt);
-    await this.saveConfirmation({
-      version: WASTE_CONFIRMATION_VERSION,
-      confirmationId,
+    const expiresAt = new Date(createdAt.getTime() + PENDING_WRITE_TTL_MS);
+    const review = stageReview(
+      "STEP bulky-waste pickup service",
+      prepared.review,
+      expiresAt
+    );
+    const pendingWrite: PendingWasteWrite = {
+      pendingWriteHandle,
+      state: "staged",
       kind: "swp_bulky_waste",
+      workflow: "bulky_waste_pickup",
+      destination: "STEP bulky-waste pickup service",
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
-      remoteFingerprint: prepared.remoteFingerprint,
-      payload,
-      review: prepared.review
-    });
-    this.scheduleExpiryCleanup(confirmationId, WASTE_CONFIRMATION_TTL_MS);
+      contractFingerprint: prepared.remoteFingerprint,
+      payload: { draft: prepared.draft } satisfies PreparedSwpPayload,
+      review,
+      warnings: prepared.warnings,
+      privacyUrls: prepared.privacyUrls
+    };
+    try {
+      await savePendingWrite(pendingWrite);
+    } catch {
+      await deletePendingWriteArtifacts(pendingWriteHandle).catch(() => undefined);
+      throw new PortalError("The pending STEP request could not be stored safely.", "PENDING_WRITE_STORAGE_ERROR");
+    }
 
     return {
       ok: true,
       workflow: "bulky_waste_pickup",
-      confirmationId,
+      kind: "swp_bulky_waste",
+      pendingWriteHandle,
+      createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
+      requiresExplicitApproval: true,
       validationIssues: [],
       warnings: prepared.warnings,
-      review: prepared.review,
+      review,
       privacyUrls: prepared.privacyUrls
     };
   }
 
-  async commitBulkyWastePickup(confirmationId: string): Promise<WasteCommitResult> {
-    const claimed = await this.claimConfirmation(confirmationId);
-    if (claimed.status === "missing") {
-      throw new PortalError("Waste confirmation was not found or has already been used.", "CONFIRMATION_NOT_FOUND", 404);
-    }
-    if (claimed.status === "expired") {
-      throw new PortalError("Waste confirmation expired. Prepare a new request.", "CONFIRMATION_EXPIRED", 410);
-    }
-
-    this.cancelExpiryCleanup(confirmationId);
-    const confirmation = claimed.confirmation;
-    let outcome: WasteCommitResult | undefined;
-    let failure: PortalError | undefined;
-    try {
-      if (confirmation.kind !== "swp_bulky_waste") {
-        throw new PortalError("Confirmation belongs to a different waste workflow.", "CONFIRMATION_KIND_MISMATCH", 409);
-      }
-      const payload = parseSwpPayload(confirmation);
-      if (payload.draft.earliestPickupDate < berlinDate(this.now())) {
-        throw new PortalError(
-          "The approved earliest pickup date is now in the past. Prepare a new request.",
-          "CONFIRMATION_STALE",
-          409
-        );
-      }
-      const result = await this.swpClient.commit(payload.draft, confirmation.remoteFingerprint);
-      outcome = {
-        ok: true,
-        workflow: "bulky_waste_pickup",
-        state: "request_received",
-        committedAt: this.now().toISOString(),
-        status: result.httpStatus,
-        summary: result.summary
-      };
-    } catch (error) {
-      failure = externalError(error, "SWP");
-    }
-    const cleanupFailed = await this.cleanupConfirmation(confirmationId);
-    if (failure) {
-      throw failure;
-    }
-    if (!outcome) {
-      throw new PortalError("The STEP bulky-waste service failed.", "SWP_UNKNOWN");
-    }
-    if (cleanupFailed) {
-      outcome.warnings = [...(outcome.warnings ?? []), localCleanupWarning()];
-    }
-    return outcome;
-  }
-
   async prepareAbandonedWasteReport(input: AbandonedWasteReportInput): Promise<WastePreparation<unknown>> {
-    await this.maintainConfirmations();
     const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "propotsdam-waste-preview-"));
     try {
       const prepared = await this.resolveAbandonedWasteReport(input, temporaryDirectory);
@@ -239,158 +200,216 @@ export class WasteService implements WasteServiceLike {
     }
   }
 
-  async requestAbandonedWasteReportCommit(input: AbandonedWasteReportInput): Promise<WasteCommitRequest> {
-    const confirmationId = this.confirmationId();
-    const stagingDirectory = await this.ensurePhotoStaging(confirmationId);
+  async stageAbandonedWasteReport(input: AbandonedWasteReportInput): Promise<StagedWasteActionResult> {
+    await this.maintainPendingWrites();
+    const pendingWriteHandle = this.pendingWriteHandle();
+    const stagingDirectory = pendingWriteArtifactsDir(pendingWriteHandle);
     let prepared: WastePreparation<PreparedPotsdamPayload>;
     try {
       prepared = await this.resolveAbandonedWasteReport(input, stagingDirectory);
       if (!prepared.ok || !prepared.draft || !prepared.remoteFingerprint) {
-        await deleteWasteConfirmationArtifacts(confirmationId);
-        return commitRequestFromPreparation(prepared);
+        await deletePendingWriteArtifacts(pendingWriteHandle);
+        return stageResultFromPreparation("potsdam_abandoned_waste", prepared);
       }
 
       const createdAt = this.now();
-      const expiresAt = new Date(createdAt.getTime() + WASTE_CONFIRMATION_TTL_MS);
-      await this.maintainConfirmations(createdAt);
-      await this.saveConfirmation({
-        version: WASTE_CONFIRMATION_VERSION,
-        confirmationId,
+      const expiresAt = new Date(createdAt.getTime() + PENDING_WRITE_TTL_MS);
+      const review = stageReview(
+        "Potsdam abandoned-waste reporting service",
+        prepared.review,
+        expiresAt,
+        "Public-data warning: the location, description, and normalized photos may become publicly visible."
+      );
+      const pendingWrite: PendingWasteWrite = {
+        pendingWriteHandle,
+        state: "staged",
         kind: "potsdam_abandoned_waste",
+        workflow: "abandoned_waste_report",
+        destination: "Potsdam abandoned-waste reporting service",
         createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
-        remoteFingerprint: prepared.remoteFingerprint,
+        contractFingerprint: prepared.remoteFingerprint,
         payload: prepared.draft,
-        review: prepared.review,
-        stagedPhotos: prepared.draft.photos.map((photo) => ({
-          stagedPath: photo.path,
+        review,
+        warnings: prepared.warnings,
+        privacyUrls: prepared.privacyUrls,
+        artifacts: prepared.draft.photos.map((photo) => ({
+          filePath: photo.path,
           filename: photo.filename,
           mimeType: photo.mimeType,
           byteLength: photo.byteLength,
           sha256: photo.sha256
         }))
-      });
-      this.scheduleExpiryCleanup(confirmationId, WASTE_CONFIRMATION_TTL_MS);
+      };
+      try {
+        await savePendingWrite(pendingWrite);
+      } catch {
+        throw new PortalError("The pending Potsdam report could not be stored safely.", "PENDING_WRITE_STORAGE_ERROR");
+      }
 
       return {
         ok: true,
         workflow: "abandoned_waste_report",
-        confirmationId,
+        kind: "potsdam_abandoned_waste",
+        pendingWriteHandle,
+        createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
+        requiresExplicitApproval: true,
         validationIssues: [],
         warnings: prepared.warnings,
-        review: prepared.review,
+        review,
         privacyUrls: prepared.privacyUrls
       };
     } catch (error) {
-      await deleteWasteConfirmationArtifacts(confirmationId);
+      await deletePendingWriteArtifacts(pendingWriteHandle).catch(() => undefined);
       throw externalError(error, "POTSDAM_WASTE");
     }
   }
 
-  async commitAbandonedWasteReport(confirmationId: string): Promise<WasteCommitResult> {
-    const claimed = await this.claimConfirmation(confirmationId);
-    if (claimed.status === "missing") {
-      throw new PortalError("Waste confirmation was not found or has already been used.", "CONFIRMATION_NOT_FOUND", 404);
-    }
-    if (claimed.status === "expired") {
-      throw new PortalError("Waste confirmation expired. Prepare a new report.", "CONFIRMATION_EXPIRED", 410);
-    }
-
-    this.cancelExpiryCleanup(confirmationId);
-    const confirmation = claimed.confirmation;
-    let outcome: WasteCommitResult | undefined;
-    let failure: PortalError | undefined;
-    try {
-      if (confirmation.kind !== "potsdam_abandoned_waste") {
-        throw new PortalError("Confirmation belongs to a different waste workflow.", "CONFIRMATION_KIND_MISMATCH", 409);
+  async commitPendingWrite(
+    pendingWriteHandle: string,
+    expectedKind: PendingWasteWrite["kind"]
+  ): Promise<PendingWriteCommitResult> {
+    const workflow = wasteWorkflow(expectedKind);
+    const pendingWrite = await loadPendingWrite(pendingWriteHandle).catch(() => null);
+    if (!pendingWrite || pendingWrite.kind !== expectedKind) {
+      if (!pendingWrite) {
+        await deletePendingWrite(pendingWriteHandle).catch(() => false);
       }
-      const payload = parsePotsdamPayload(confirmation);
-      const result = await this.potsdamClient.commit(payload.draft, payload.photos, confirmation.remoteFingerprint);
-      outcome = {
-        ok: true,
-        workflow: "abandoned_waste_report",
-        state: "awaiting_email_confirmation",
-        committedAt: this.now().toISOString(),
-        status: result.httpStatus,
-        summary: result.summary,
-        reference: result.reportId,
-        warnings: ["Open the Potsdam email and activate the report before its link expires."]
-      };
+      return wasteCommitResult(
+        pendingWriteHandle,
+        expectedKind,
+        workflow,
+        "notSent",
+        "Pending action was not found, expired, cancelled, already used, or belongs to a different executor.",
+        this.now()
+      );
+    }
+    if (Date.parse(pendingWrite.expiresAt) <= this.now().getTime()) {
+      await deletePendingWrite(pendingWriteHandle).catch(() => false);
+      return wasteCommitResult(
+        pendingWriteHandle,
+        expectedKind,
+        workflow,
+        "notSent",
+        "Pending action expired before dispatch. Stage and approve a new action.",
+        this.now()
+      );
+    }
+
+    try {
+      if (pendingWrite.kind === "swp_bulky_waste") {
+        const payload = parseSwpPayload(pendingWrite);
+        if (payload.draft.earliestPickupDate < berlinDate(this.now())) {
+          throw new PortalError("The approved earliest pickup date is now in the past. Stage a new request.", "PENDING_WRITE_STALE", 409);
+        }
+        const contract = await this.swpClient.inspect();
+        if (contract.fingerprint !== pendingWrite.contractFingerprint) {
+          throw new PortalError("The STEP form changed after review. Stage and approve a new request.", "PENDING_WRITE_CONTRACT_CHANGED", 409);
+        }
+      } else {
+        const payload = parsePotsdamPayload(pendingWrite);
+        const config = await this.potsdamClient.inspectConfig();
+        if (config.fingerprint !== pendingWrite.contractFingerprint) {
+          throw new PortalError("The Potsdam report form changed after review. Stage and approve a new report.", "PENDING_WRITE_CONTRACT_CHANGED", 409);
+        }
+        for (const photo of payload.photos) {
+          await verifyStagedPotsdamWastePhoto(photo);
+        }
+      }
     } catch (error) {
-      failure = externalError(error, "POTSDAM_WASTE");
+      await deletePendingWrite(pendingWriteHandle).catch(() => false);
+      const failure = externalError(error, pendingWrite.kind === "swp_bulky_waste" ? "SWP" : "POTSDAM_WASTE");
+      return wasteCommitResult(
+        pendingWriteHandle,
+        expectedKind,
+        workflow,
+        "notSent",
+        `Pending action failed preflight: ${failure.message}`,
+        this.now(),
+        failure.status
+      );
     }
-    const cleanupFailed = await this.cleanupConfirmation(confirmationId);
-    if (failure) {
-      throw failure;
+
+    const claimed = await claimPendingWrite(pendingWriteHandle, this.now()).catch(() => null);
+    if (!claimed || claimed.kind !== expectedKind) {
+      return wasteCommitResult(
+        pendingWriteHandle,
+        expectedKind,
+        workflow,
+        "notSent",
+        "Pending action could not be claimed because it expired or was already used.",
+        this.now()
+      );
     }
-    if (!outcome) {
-      throw new PortalError("The Potsdam abandoned-waste service failed.", "POTSDAM_WASTE_UNKNOWN");
+
+    let result: PendingWriteCommitResult;
+    try {
+      if (claimed.kind === "swp_bulky_waste") {
+        const payload = parseSwpPayload(claimed);
+        const committed = await this.swpClient.commit(payload.draft, claimed.contractFingerprint);
+        result = {
+          ...wasteCommitResult(
+            pendingWriteHandle,
+            claimed.kind,
+            claimed.workflow,
+            "succeeded",
+            committed.summary,
+            this.now(),
+            committed.httpStatus
+          ),
+          ok: true,
+          state: "request_received"
+        };
+      } else {
+        const payload = parsePotsdamPayload(claimed);
+        const committed = await this.potsdamClient.commit(payload.draft, payload.photos, claimed.contractFingerprint);
+        result = {
+          ...wasteCommitResult(
+            pendingWriteHandle,
+            claimed.kind,
+            claimed.workflow,
+            "succeeded",
+            committed.summary,
+            this.now(),
+            committed.httpStatus
+          ),
+          ok: true,
+          state: "awaiting_email_confirmation",
+          reference: committed.reportId,
+          warnings: ["Open the Potsdam email and activate the report before its link expires."]
+        };
+      }
+    } catch (error) {
+      const failure = externalError(error, claimed.kind === "swp_bulky_waste" ? "SWP" : "POTSDAM_WASTE");
+      const outcome = wasteFailureOutcome(error);
+      result = wasteCommitResult(
+        pendingWriteHandle,
+        claimed.kind,
+        claimed.workflow,
+        outcome,
+        outcome === "outcomeUncertain"
+          ? `${failure.message} The final outcome is uncertain. Do not retry automatically.`
+          : failure.message,
+        this.now(),
+        failure.status,
+        failure.details?.warnings
+      );
     }
+    const cleanupFailed = await this.cleanupClaimedPendingWrite(pendingWriteHandle)
+      .then(() => false)
+      .catch(() => true);
     if (cleanupFailed) {
-      outcome.warnings = [...(outcome.warnings ?? []), localCleanupWarning()];
+      result.warnings = [...(result.warnings ?? []), localCleanupWarning()];
     }
-    return outcome;
+    return result;
   }
 
-  private scheduleExpiryCleanup(confirmationId: string, delayMs: number): void {
-    this.cancelExpiryCleanup(confirmationId);
-    const timer = setTimeout(() => {
-      this.cleanupTimers.delete(confirmationId);
-      void deleteWasteConfirmationArtifacts(confirmationId).catch(() => undefined);
-    }, Math.max(0, delayMs) + 50);
-    timer.unref?.();
-    this.cleanupTimers.set(confirmationId, timer);
-  }
-
-  private cancelExpiryCleanup(confirmationId: string): void {
-    const timer = this.cleanupTimers.get(confirmationId);
-    if (timer) {
-      clearTimeout(timer);
-      this.cleanupTimers.delete(confirmationId);
-    }
-  }
-
-  private async cleanupConfirmation(confirmationId: string): Promise<boolean> {
+  private async maintainPendingWrites(now = this.now()): Promise<void> {
     try {
-      await deleteWasteConfirmationArtifacts(confirmationId);
-      return false;
+      await deleteExpiredPendingWrites(now);
     } catch {
-      return true;
-    }
-  }
-
-  private async maintainConfirmations(now = this.now()): Promise<void> {
-    try {
-      await deleteExpiredWasteConfirmations(now);
-    } catch {
-      throw new PortalError("Local waste confirmation maintenance failed.", "WASTE_CONFIRMATION_STORAGE_ERROR");
-    }
-  }
-
-  private async saveConfirmation(confirmation: StoredWasteConfirmation): Promise<void> {
-    try {
-      await saveWasteConfirmation(confirmation);
-    } catch {
-      throw new PortalError("The waste confirmation could not be stored safely.", "WASTE_CONFIRMATION_STORAGE_ERROR");
-    }
-  }
-
-  private async claimConfirmation(
-    confirmationId: string
-  ): Promise<Awaited<ReturnType<typeof claimWasteConfirmation>>> {
-    try {
-      return await claimWasteConfirmation(confirmationId, this.now());
-    } catch {
-      throw new PortalError("The waste confirmation could not be read safely.", "WASTE_CONFIRMATION_STORAGE_ERROR");
-    }
-  }
-
-  private async ensurePhotoStaging(confirmationId: string): Promise<string> {
-    try {
-      return await ensureWastePhotoStagingDir(confirmationId);
-    } catch {
-      throw new PortalError("The waste-photo staging area could not be created safely.", "WASTE_CONFIRMATION_STORAGE_ERROR");
+      throw new PortalError("Local pending-action maintenance failed.", "PENDING_WRITE_STORAGE_ERROR");
     }
   }
 
@@ -581,12 +600,7 @@ export class WasteService implements WasteServiceLike {
         }
       : undefined;
     const content = draft && location ? { draft, location, photos } : undefined;
-    const payload: PreparedPotsdamPayload | undefined = content
-      ? {
-          ...content,
-          approvedDigest: approvalDigest("potsdam_abandoned_waste", config.fingerprint, content)
-        }
-      : undefined;
+    const payload: PreparedPotsdamPayload | undefined = content;
     const review = payload ? abandonedWasteReview(payload, input.photoPaths) : [];
     return {
       ok: Boolean(payload),
@@ -837,16 +851,35 @@ function formatAddress(address: WasteAddress): string {
   return `${address.street} ${address.houseNumber}, ${address.postalCode} ${address.city}`;
 }
 
-function commitRequestFromPreparation(prepared: WastePreparation<unknown>): WasteCommitRequest {
+function stageResultFromPreparation(
+  kind: PendingWasteWrite["kind"],
+  prepared: WastePreparation<unknown>
+): StagedWasteActionResult {
   return {
     ok: false,
     workflow: prepared.workflow,
+    kind,
+    requiresExplicitApproval: false,
     validationIssues: unique([...prepared.missingFields.map((field) => `Missing required field '${field}'.`), ...prepared.validationIssues]),
     warnings: prepared.warnings,
     review: prepared.review,
     privacyUrls: prepared.privacyUrls,
     ...(prepared.contractCandidates ? { contractCandidates: prepared.contractCandidates } : {})
   };
+}
+
+function stageReview(
+  destination: string,
+  review: string[],
+  expiresAt: Date,
+  prominentWarning?: string
+): string[] {
+  return [
+    ...(prominentWarning ? [prominentWarning] : []),
+    `Destination: ${destination}`,
+    ...review,
+    `Approval deadline: ${expiresAt.toISOString()}`
+  ];
 }
 
 function emptyDefaults(): PortalWasteDefaults {
@@ -869,49 +902,33 @@ function applicableDefaultIssues(
   });
 }
 
-function approvalDigest(kind: string, fingerprint: string, content: unknown): string {
-  return createHmac("sha256", CONFIRMATION_AUTH_KEY)
-    .update(JSON.stringify({ kind, fingerprint, content }))
-    .digest("hex");
-}
-
-function equalDigest(actual: string, expected: string): boolean {
-  if (!/^[0-9a-f]{64}$/.test(actual) || !/^[0-9a-f]{64}$/.test(expected)) {
-    return false;
-  }
-  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
-}
-
-function parseSwpPayload(confirmation: StoredWasteConfirmation): PreparedSwpPayload {
-  const payload = confirmation.payload as Partial<PreparedSwpPayload> | undefined;
-  if (!payload?.draft || typeof payload.approvedDigest !== "string") {
-    throw new PortalError("Stored STEP confirmation is invalid.", "CONFIRMATION_TAMPERED", 409);
-  }
-  const expected = approvalDigest("swp_bulky_waste", confirmation.remoteFingerprint, { draft: payload.draft });
-  if (!equalDigest(payload.approvedDigest, expected)) {
-    throw new PortalError("Stored STEP confirmation was changed after approval.", "CONFIRMATION_TAMPERED", 409);
+function parseSwpPayload(pendingWrite: PendingWasteWrite): PreparedSwpPayload {
+  const payload = pendingWrite.payload as Partial<PreparedSwpPayload> | undefined;
+  if (pendingWrite.kind !== "swp_bulky_waste" || !payload?.draft || typeof payload.draft !== "object") {
+    throw new PortalError("Stored STEP pending action is invalid.", "PENDING_WRITE_TAMPERED", 409);
   }
   return payload as PreparedSwpPayload;
 }
 
-function parsePotsdamPayload(confirmation: StoredWasteConfirmation): PreparedPotsdamPayload {
-  const payload = confirmation.payload as Partial<PreparedPotsdamPayload> | undefined;
-  if (!payload?.draft || !payload.location || !Array.isArray(payload.photos) || typeof payload.approvedDigest !== "string") {
-    throw new PortalError("Stored Potsdam report confirmation is invalid.", "CONFIRMATION_TAMPERED", 409);
-  }
-  const content = { draft: payload.draft, location: payload.location, photos: payload.photos };
-  const expected = approvalDigest("potsdam_abandoned_waste", confirmation.remoteFingerprint, content);
-  if (!equalDigest(payload.approvedDigest, expected) || !sameStagedPhotos(payload.photos, confirmation)) {
-    throw new PortalError("Stored Potsdam report confirmation was changed after approval.", "CONFIRMATION_TAMPERED", 409);
+function parsePotsdamPayload(pendingWrite: PendingWasteWrite): PreparedPotsdamPayload {
+  const payload = pendingWrite.payload as Partial<PreparedPotsdamPayload> | undefined;
+  if (
+    pendingWrite.kind !== "potsdam_abandoned_waste"
+    || !payload?.draft
+    || !payload.location
+    || !Array.isArray(payload.photos)
+    || !sameStagedPhotos(payload.photos, pendingWrite)
+  ) {
+    throw new PortalError("Stored Potsdam report pending action is invalid.", "PENDING_WRITE_TAMPERED", 409);
   }
   return payload as PreparedPotsdamPayload;
 }
 
-function sameStagedPhotos(photos: PotsdamWastePhoto[], confirmation: StoredWasteConfirmation): boolean {
-  const metadata = confirmation.stagedPhotos ?? [];
+function sameStagedPhotos(photos: PotsdamWastePhoto[], pendingWrite: PendingWasteWrite): boolean {
+  const metadata = pendingWrite.artifacts ?? [];
   return photos.length === metadata.length && photos.every((photo, index) => {
     const stored = metadata[index];
-    return stored?.stagedPath === photo.path
+    return stored?.filePath === photo.path
       && stored.filename === photo.filename
       && stored.mimeType === photo.mimeType
       && stored.byteLength === photo.byteLength
@@ -931,7 +948,7 @@ function externalError(error: unknown, prefix: "SWP" | "POTSDAM_WASTE"): PortalE
       error.status,
       ambiguous ? {
         outcomeUncertain: true,
-        warnings: ["The one-time confirmation is consumed. Do not retry automatically; verify the external response or activation email before preparing a replacement."]
+        warnings: ["The one-time pending action is consumed. Do not retry automatically; verify the external response or activation email before staging a replacement."]
       } : undefined
     );
   }
@@ -941,8 +958,64 @@ function externalError(error: unknown, prefix: "SWP" | "POTSDAM_WASTE"): PortalE
   );
 }
 
+function wasteWorkflow(kind: PendingWasteWrite["kind"]): PendingWasteWrite["workflow"] {
+  return kind === "swp_bulky_waste" ? "bulky_waste_pickup" : "abandoned_waste_report";
+}
+
+function wasteCommitResult(
+  pendingWriteHandle: string,
+  kind: PendingWasteWrite["kind"],
+  workflow: PendingWasteWrite["workflow"],
+  outcome: WriteOutcome,
+  summary: string,
+  completedAt: Date,
+  status?: number,
+  warnings?: string[]
+): PendingWriteCommitResult {
+  return {
+    ok: outcome === "succeeded",
+    outcome,
+    pendingWriteHandle,
+    kind,
+    workflow,
+    completedAt: completedAt.toISOString(),
+    summary,
+    ...(status === undefined ? {} : { status }),
+    ...(warnings?.length ? { warnings } : {})
+  };
+}
+
+function wasteFailureOutcome(error: unknown): Exclude<WriteOutcome, "succeeded"> {
+  if (error instanceof PortalError) {
+    return error.details?.outcomeUncertain ? "outcomeUncertain" : "notSent";
+  }
+  if (error instanceof SwpClientError) {
+    if (error.code === "AMBIGUOUS_WRITE") {
+      return "outcomeUncertain";
+    }
+    if (error.code === "VALIDATION_FAILED" || (error.code === "HTTP_ERROR" && Boolean(error.status && error.status < 500))) {
+      return "rejected";
+    }
+    return "notSent";
+  }
+  if (error instanceof PotsdamWasteError) {
+    if (error.code === "AMBIGUOUS_WRITE") {
+      return "outcomeUncertain";
+    }
+    if (
+      error.code === "MAX_REPORTS_REACHED"
+      || error.code === "CREATE_FAILED"
+      || (error.code === "PHOTO_REQUIRED" && error.status !== undefined)
+    ) {
+      return "rejected";
+    }
+    return "notSent";
+  }
+  return "outcomeUncertain";
+}
+
 function localCleanupWarning(): string {
-  return "The external request was accepted, but local confirmation cleanup could not be verified. Do not reuse this confirmation id.";
+  return "The external attempt completed, but local pending-action cleanup could not be verified. Do not retry automatically.";
 }
 
 function unique(values: string[]): string[] {

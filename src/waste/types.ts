@@ -1,3 +1,5 @@
+import type { PendingWasteWrite, PendingWriteCommitResult, PendingWriteKind } from "../types.js";
+
 export type WasteSalutation = "female" | "male" | "unspecified";
 
 export interface WasteAddress {
@@ -113,11 +115,14 @@ export interface WastePreparation<TDraft> {
   remoteFingerprint?: string;
 }
 
-export interface WasteCommitRequest {
+export interface StagedWasteActionResult {
   ok: boolean;
   workflow: WasteWorkflow;
-  confirmationId?: string;
+  kind: Extract<PendingWriteKind, "swp_bulky_waste" | "potsdam_abandoned_waste">;
+  pendingWriteHandle?: string;
+  createdAt?: string;
   expiresAt?: string;
+  requiresExplicitApproval: boolean;
   validationIssues: string[];
   warnings: string[];
   review: string[];
@@ -125,22 +130,13 @@ export interface WasteCommitRequest {
   contractCandidates?: PortalWasteDefaults["candidates"];
 }
 
-export interface WasteCommitResult {
-  ok: true;
-  workflow: WasteWorkflow;
-  state: "request_received" | "awaiting_email_confirmation";
-  committedAt: string;
-  status: number;
-  summary: string;
-  reference?: string;
-  warnings?: string[];
-}
-
 export interface WasteServiceLike {
   prepareBulkyWastePickup(input: BulkyWastePickupInput): Promise<WastePreparation<unknown>>;
-  requestBulkyWastePickupCommit(input: BulkyWastePickupInput): Promise<WasteCommitRequest>;
-  commitBulkyWastePickup(confirmationId: string): Promise<WasteCommitResult>;
+  stageBulkyWastePickup(input: BulkyWastePickupInput): Promise<StagedWasteActionResult>;
   prepareAbandonedWasteReport(input: AbandonedWasteReportInput): Promise<WastePreparation<unknown>>;
-  requestAbandonedWasteReportCommit(input: AbandonedWasteReportInput): Promise<WasteCommitRequest>;
-  commitAbandonedWasteReport(confirmationId: string): Promise<WasteCommitResult>;
+  stageAbandonedWasteReport(input: AbandonedWasteReportInput): Promise<StagedWasteActionResult>;
+  commitPendingWrite(
+    pendingWriteHandle: string,
+    expectedKind: PendingWasteWrite["kind"]
+  ): Promise<PendingWriteCommitResult>;
 }

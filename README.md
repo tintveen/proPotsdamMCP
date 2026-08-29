@@ -4,7 +4,7 @@
 
 Unofficial local MCP server for the ProPotsdam/Easysquare customer portal, STEP bulky-waste pickup, and Potsdam abandoned-waste reports.
 
-It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. Direct ProPotsdam writes use explicit conversational approval; the separate municipal waste workflows remain confirmation-protected. All write support should be treated as experimental.
+It runs on your Mac, talks MCP over stdio, stores your portal password in the macOS Keychain, and exposes portal data to Codex through read-first tools. ProPotsdam, STEP, and Potsdam writes all use one explicit conversational-approval model. All write support should be treated as experimental.
 
 [![CI](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/tintveen/proPotsdamMCP/actions/workflows/ci.yml)
 
@@ -33,7 +33,7 @@ npx -y propotsdam-cli auth set
 
 Requirements: Node.js 22+, npm/npx, macOS Keychain, and a ProPotsdam/Easysquare account.
 
-For the normal ProPotsdam portal, credential setup does not need a base URL. Local config, session cookies, traces, external-workflow confirmations, short-lived normalized report photos, ProPotsdam pending writes and temporary staged attachments, and MCP-created exports live under:
+For the normal ProPotsdam portal, credential setup does not need a base URL. Local config, session cookies, traces, shared pending actions and their short-lived staged attachments or normalized report photos, and MCP-created exports live under:
 
 ```text
 ~/Library/Application Support/propotsdam-mcp/
@@ -65,24 +65,24 @@ Human output uses compact tables for lists and readable detail sections for sing
 
 TTY sessions can guide missing ids and write fields with prompts. Non-interactive prepare-only runs never prompt; pass ids and values explicitly with `--value key=value`, `--values-json '{"key":"value"}'`, or `--values-file values.json`. `actions send` is deliberately interactive: it stages the immutable write, displays the exact diff, asks `Send this exact change to ProPotsdam? [y/N]`, commits on yes, and cancels on no. It refuses non-TTY use and provides no `--yes` bypass. For repair photos, pass a local JPEG/PNG path with `--attachment-file <path>`; the client stages a private hashed copy only when the portal form exposes a supported upload endpoint.
 
-Live commits are intentionally limited. This version can commit only exact `Meine Daten`/`save_partner` profile changes and detail-based `Reparatur`/`cmdsend` damage reports. MCP clients first stage a ten-minute immutable pending write, show its exact diff, stop, and wait for a new user message. The user can then approve naturally—for example, “yes, send it” or “ja, abschicken”—without seeing or copying an internal handle. Ambiguous assent such as “looks good” is not approval, and changed instructions require a newly staged diff.
+Live ProPotsdam commits are intentionally limited. This version can commit only exact `Meine Daten`/`save_partner` profile changes and detail-based `Reparatur`/`cmdsend` damage reports. MCP clients first stage a ten-minute immutable pending action, show its exact review, stop, and wait for a new user message. The user can then approve naturally—for example, “yes, send it” or “ja, abschicken”—without seeing or copying an internal handle. Ambiguous assent such as “looks good” is not approval, and changed instructions require a newly staged review.
 
-The LLM or MCP host is the conversational approval trust boundary: the server cannot inspect the chat or independently prove that approval occurred. There is no global write-enable switch. The server still binds the approved draft to the account, target, form contract, fields, and attachment hashes; atomically consumes it once; and does not retry after an uncertain dispatch. MCP destructive/read-only annotations are advisory hints, not authorization enforcement. All other discovered write domains remain draft-only until their exact portal contracts pass the release gate in [the write-safety PRD](docs/prd-safe-write-coverage.md).
+The LLM or MCP host is the conversational approval trust boundary: the server cannot inspect the chat or independently prove that approval occurred. There is no global write-enable switch. A visual approval control may only create a normal, visible user-authored message; it must never call the commit tool directly. The server still binds each approved draft to its exact destination, remote contract, values, and artifact hashes; atomically consumes it once; and does not retry after a possible dispatch. MCP annotations are advisory hints, not authorization enforcement. All other discovered ProPotsdam write domains remain draft-only until their exact portal contracts pass the release gate in [the write-safety PRD](docs/prd-safe-write-coverage.md).
 
 ## Bulky and abandoned waste
 
-The MCP has two separate, confirmation-protected workflows:
+The MCP has two separate domain workflows that share the same pending-action queue and conversational approval boundary:
 
 - Use STEP pickup for items you are disposing of yourself, for example: “Prepare a bulky-waste pickup for one bed from my contract address, available from 2026-08-20.”
 - Use the Potsdam abandoned-waste report for an existing pile whose owner is unknown, for example: “Prepare an abandoned-waste report for the pile at my contract address using `/path/to/photo.jpg`.”
 
 Contact and address fields may be derived from one unambiguous, high-confidence ProPotsdam contract. Explicit values always win. Multiple contract addresses are returned as choices instead of being guessed.
 
-Preparation never creates the external request. A complete draft must first be turned into a short-lived confirmation and then committed using only its confirmation id. STEP returns that the pickup request was received; the actual collection date may follow later. Guest Potsdam reports require activation through the email sent by the city.
+Preparation never creates the external request or a pending action. A complete draft is staged for ten minutes, shown in full, and committed through `propotsdam_commit_pending_writes` only after explicit approval in a new user message. Internal handles stay hidden from people. The shared list and cancel tools work across ProPotsdam, STEP, and Potsdam actions, including explicitly approved mixed batches and named subsets. STEP returns `request_received`; the actual collection date may follow later. Guest Potsdam reports return `awaiting_email_confirmation` and require activation through the email sent by the city.
 
-If a final network response cannot be verified, the tool returns `outcomeUncertain: true` and consumes the confirmation. Do not retry automatically; first check for the STEP response or Potsdam activation email to avoid a duplicate request.
+If a final network response cannot be verified, the item returns `outcome: "outcomeUncertain"` and consumes the pending action. Do not retry automatically; first check for the STEP response or Potsdam activation email to avoid a duplicate request.
 
-Abandoned-waste report descriptions, locations, and photos may become public. Photos are normalized to metadata-free JPEG before confirmation; JPEG, PNG, and static WebP inputs are supported, while GIF, HEIC, and HEIF require conversion first.
+Abandoned-waste report descriptions, locations, and photos may become public. This warning is repeated prominently in every staged review. Photos are normalized to metadata-free JPEG before staging; JPEG, PNG, and static WebP inputs are supported, while GIF, HEIC, and HEIF require conversion first.
 
 German aliases are available for common groups:
 
@@ -115,11 +115,9 @@ German aliases are available for common groups:
 - `propotsdam_cancel_pending_writes`
 - `propotsdam_commit_pending_writes`
 - `propotsdam_prepare_bulky_waste_pickup`
-- `propotsdam_request_bulky_waste_pickup_commit`
-- `propotsdam_commit_bulky_waste_pickup`
+- `propotsdam_stage_bulky_waste_pickup`
 - `propotsdam_prepare_abandoned_waste_report`
-- `propotsdam_request_abandoned_waste_report_commit`
-- `propotsdam_commit_abandoned_waste_report`
+- `propotsdam_stage_abandoned_waste_report`
 
 ## Development
 

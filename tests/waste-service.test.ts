@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -123,7 +122,7 @@ describe("WasteService bulky-waste pickup", () => {
     });
   });
 
-  it("creates a ten-minute confirmation and commits it exactly once", async () => {
+  it("creates a ten-minute pending action and commits it exactly once", async () => {
     const { WasteService } = await import("../src/waste/waste-service.js");
     const swpClient = fakeSwpClient();
     const service = new WasteService(emptyPortalClient(), {
@@ -131,29 +130,30 @@ describe("WasteService bulky-waste pickup", () => {
       swpClient,
       potsdamClient: fakePotsdamClient(),
       now: () => NOW,
-      confirmationId: () => "11111111-1111-4111-8111-111111111111"
+      pendingWriteHandle: () => "11111111-1111-4111-8111-111111111111"
     });
 
-    const requested = await service.requestBulkyWastePickupCommit(completeBulkyInput());
+    const requested = await service.stageBulkyWastePickup(completeBulkyInput());
     expect(requested).toMatchObject({
       ok: true,
-      confirmationId: "11111111-1111-4111-8111-111111111111",
+      pendingWriteHandle: "11111111-1111-4111-8111-111111111111",
       expiresAt: "2026-08-15T10:10:00.000Z"
     });
     expect(swpClient.commit).not.toHaveBeenCalled();
 
-    await expect(service.commitBulkyWastePickup(requested.confirmationId!)).resolves.toMatchObject({
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
       ok: true,
+      outcome: "succeeded",
       state: "request_received"
     });
     expect(swpClient.commit).toHaveBeenCalledOnce();
-    await expect(service.commitBulkyWastePickup(requested.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_NOT_FOUND"
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
+      outcome: "notSent"
     });
     expect(swpClient.commit).toHaveBeenCalledOnce();
   });
 
-  it("returns ambiguity and missing fields without creating a confirmation", async () => {
+  it("returns ambiguity and missing fields without creating a pending action", async () => {
     const { WasteService } = await import("../src/waste/waste-service.js");
     const service = new WasteService(emptyPortalClient(), {
       defaultsProvider: {
@@ -174,13 +174,13 @@ describe("WasteService bulky-waste pickup", () => {
       now: () => NOW
     });
 
-    const result = await service.requestBulkyWastePickupCommit({
+    const result = await service.stageBulkyWastePickup({
       earliestPickupDate: "2026-08-20",
       items: [{ kind: "couch_sofa_bed", quantity: 1 }]
     });
 
     expect(result.ok).toBe(false);
-    expect(result.confirmationId).toBeUndefined();
+    expect(result.pendingWriteHandle).toBeUndefined();
     expect(result.validationIssues.join(" ")).toContain("Multiple high-confidence portal contract addresses");
     expect(result.validationIssues.join(" ")).toContain("contact.email");
     expect(result.contractCandidates).toHaveLength(2);
@@ -203,7 +203,7 @@ describe("WasteService bulky-waste pickup", () => {
       now: () => NOW
     });
 
-    const result = await service.requestBulkyWastePickupCommit({
+    const result = await service.stageBulkyWastePickup({
       ...completeBulkyInput(),
       contractId: "UNKNOWN"
     });
@@ -275,7 +275,7 @@ describe("WasteService bulky-waste pickup", () => {
     expect(result.validationIssues).toEqual([]);
   });
 
-  it("surfaces an uncertain final STEP outcome and consumes the confirmation", async () => {
+  it("surfaces an uncertain final STEP outcome and consumes the pending action", async () => {
     const { SwpClientError } = await import("../src/swp/index.js");
     const { WasteService } = await import("../src/waste/waste-service.js");
     const swpClient = fakeSwpClient();
@@ -288,24 +288,86 @@ describe("WasteService bulky-waste pickup", () => {
       swpClient,
       potsdamClient: fakePotsdamClient(),
       now: () => NOW,
-      confirmationId: () => "77777777-7777-4777-8777-777777777777"
+      pendingWriteHandle: () => "77777777-7777-4777-8777-777777777777"
     });
-    const requested = await service.requestBulkyWastePickupCommit(completeBulkyInput());
+    const requested = await service.stageBulkyWastePickup(completeBulkyInput());
 
-    await expect(service.commitBulkyWastePickup(requested.confirmationId!)).rejects.toMatchObject({
-      code: "SWP_AMBIGUOUS_WRITE",
-      details: {
-        outcomeUncertain: true,
-        warnings: [expect.stringContaining("Do not retry automatically")]
-      }
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
+      outcome: "outcomeUncertain",
+      summary: expect.stringContaining("Do not retry automatically")
     });
-    await expect(service.commitBulkyWastePickup(requested.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_NOT_FOUND"
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
+      outcome: "notSent"
     });
     expect(swpClient.commit).toHaveBeenCalledOnce();
   });
 
-  it("consumes a confirmation whose earliest pickup date became stale at midnight", async () => {
+  it("reports a definitive STEP validation response as rejected", async () => {
+    const { SwpClientError } = await import("../src/swp/index.js");
+    const { WasteService } = await import("../src/waste/waste-service.js");
+    const swpClient = fakeSwpClient();
+    swpClient.commit.mockRejectedValueOnce(new SwpClientError(
+      "STEP rejected the request as invalid.",
+      "VALIDATION_FAILED",
+      400
+    ));
+    const service = new WasteService(emptyPortalClient(), {
+      defaultsProvider: unusedDefaults(),
+      swpClient,
+      potsdamClient: fakePotsdamClient(),
+      now: () => NOW
+    });
+    const staged = await service.stageBulkyWastePickup(completeBulkyInput());
+
+    await expect(service.commitPendingWrite(staged.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
+      outcome: "rejected",
+      status: 400
+    });
+    expect(swpClient.commit).toHaveBeenCalledOnce();
+  });
+
+  it("invalidates a STEP action when the remote form changes before dispatch", async () => {
+    const { WasteService } = await import("../src/waste/waste-service.js");
+    const swpClient = fakeSwpClient();
+    const service = new WasteService(emptyPortalClient(), {
+      defaultsProvider: unusedDefaults(),
+      swpClient,
+      potsdamClient: fakePotsdamClient(),
+      now: () => NOW
+    });
+    const staged = await service.stageBulkyWastePickup(completeBulkyInput());
+    const current = await swpClient.inspect();
+    swpClient.inspect.mockResolvedValue({ ...current, fingerprint: "c".repeat(64) });
+
+    await expect(service.commitPendingWrite(staged.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
+      outcome: "notSent",
+      summary: expect.stringContaining("changed after review")
+    });
+    expect(swpClient.commit).not.toHaveBeenCalled();
+  });
+
+  it("keeps a successful receipt and warns if local claimed-state cleanup fails", async () => {
+    const { WasteService } = await import("../src/waste/waste-service.js");
+    const swpClient = fakeSwpClient();
+    const service = new WasteService(emptyPortalClient(), {
+      defaultsProvider: unusedDefaults(),
+      swpClient,
+      potsdamClient: fakePotsdamClient(),
+      now: () => NOW,
+      deleteClaimedPendingWrite: async () => {
+        throw new Error("synthetic cleanup failure");
+      }
+    });
+    const staged = await service.stageBulkyWastePickup(completeBulkyInput());
+
+    await expect(service.commitPendingWrite(staged.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
+      outcome: "succeeded",
+      warnings: [expect.stringContaining("cleanup could not be verified")]
+    });
+    expect(swpClient.commit).toHaveBeenCalledOnce();
+  });
+
+  it("consumes a pending action whose earliest pickup date became stale at midnight", async () => {
     const { WasteService } = await import("../src/waste/waste-service.js");
     const swpClient = fakeSwpClient();
     let current = new Date("2026-08-15T21:56:00.000Z");
@@ -314,14 +376,15 @@ describe("WasteService bulky-waste pickup", () => {
       swpClient,
       potsdamClient: fakePotsdamClient(),
       now: () => current,
-      confirmationId: () => "44444444-4444-4444-8444-444444444444"
+      pendingWriteHandle: () => "44444444-4444-4444-8444-444444444444"
     });
     const input = { ...completeBulkyInput(), earliestPickupDate: "2026-08-15" };
-    const requested = await service.requestBulkyWastePickupCommit(input);
+    const requested = await service.stageBulkyWastePickup(input);
     current = new Date("2026-08-15T22:01:00.000Z");
 
-    await expect(service.commitBulkyWastePickup(requested.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_STALE"
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
+      outcome: "notSent",
+      summary: expect.stringContaining("past")
     });
     expect(swpClient.commit).not.toHaveBeenCalled();
   });
@@ -334,23 +397,21 @@ describe("WasteService bulky-waste pickup", () => {
       swpClient,
       potsdamClient: fakePotsdamClient(),
       now: () => NOW,
-      confirmationId: () => "55555555-5555-4555-8555-555555555555"
+      pendingWriteHandle: () => "55555555-5555-4555-8555-555555555555"
     });
-    const requested = await service.requestBulkyWastePickupCommit(completeBulkyInput());
+    const requested = await service.stageBulkyWastePickup(completeBulkyInput());
 
     const results = await Promise.allSettled([
-      service.commitBulkyWastePickup(requested.confirmationId!),
-      service.commitBulkyWastePickup(requested.confirmationId!)
+      service.commitPendingWrite(requested.pendingWriteHandle!, "swp_bulky_waste"),
+      service.commitPendingWrite(requested.pendingWriteHandle!, "swp_bulky_waste")
     ]);
 
-    expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
-    expect(results.find((result) => result.status === "rejected")).toMatchObject({
-      reason: { code: "CONFIRMATION_NOT_FOUND" }
-    });
+    expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+    expect(results.map((result) => result.status === "fulfilled" ? result.value.outcome : "rejected").sort()).toEqual(["notSent", "succeeded"]);
     expect(swpClient.commit).toHaveBeenCalledOnce();
   });
 
-  it("consumes a confirmation presented to the wrong workflow without writing", async () => {
+  it("does not consume a pending action presented to the wrong workflow", async () => {
     const { WasteService } = await import("../src/waste/waste-service.js");
     const swpClient = fakeSwpClient();
     const potsdamClient = fakePotsdamClient();
@@ -359,17 +420,17 @@ describe("WasteService bulky-waste pickup", () => {
       swpClient,
       potsdamClient,
       now: () => NOW,
-      confirmationId: () => "66666666-6666-4666-8666-666666666666"
+      pendingWriteHandle: () => "66666666-6666-4666-8666-666666666666"
     });
-    const requested = await service.requestBulkyWastePickupCommit(completeBulkyInput());
+    const requested = await service.stageBulkyWastePickup(completeBulkyInput());
 
-    await expect(service.commitAbandonedWasteReport(requested.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_KIND_MISMATCH"
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "potsdam_abandoned_waste")).resolves.toMatchObject({
+      outcome: "notSent"
     });
-    await expect(service.commitBulkyWastePickup(requested.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_NOT_FOUND"
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "swp_bulky_waste")).resolves.toMatchObject({
+      outcome: "succeeded"
     });
-    expect(swpClient.commit).not.toHaveBeenCalled();
+    expect(swpClient.commit).toHaveBeenCalledOnce();
     expect(potsdamClient.commit).not.toHaveBeenCalled();
   });
 });
@@ -387,10 +448,10 @@ describe("WasteService abandoned-waste report", () => {
       swpClient: fakeSwpClient(),
       potsdamClient,
       now: () => NOW,
-      confirmationId: () => "22222222-2222-4222-8222-222222222222"
+      pendingWriteHandle: () => "22222222-2222-4222-8222-222222222222"
     });
 
-    const requested = await service.requestAbandonedWasteReportCommit({
+    const requested = await service.stageAbandonedWasteReport({
       contact: { email: "erika@example.test" },
       location: { latitude: 52.4, longitude: 13.05, label: "Musterweg 10" },
       description: "Ein Bett und zwei Matratzen stehen neben den Mülltonnen.",
@@ -399,12 +460,16 @@ describe("WasteService abandoned-waste report", () => {
     });
     expect(requested).toMatchObject({
       ok: true,
-      confirmationId: "22222222-2222-4222-8222-222222222222"
+      pendingWriteHandle: "22222222-2222-4222-8222-222222222222",
+      kind: "potsdam_abandoned_waste"
     });
+    expect(requested.review[0]).toContain("may become publicly visible");
+    expect(requested.warnings).toContain("The report location, description, and normalized photos may become publicly visible.");
     expect(potsdamClient.commit).not.toHaveBeenCalled();
 
-    await expect(service.commitAbandonedWasteReport(requested.confirmationId!)).resolves.toMatchObject({
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "potsdam_abandoned_waste")).resolves.toMatchObject({
       ok: true,
+      outcome: "succeeded",
       state: "awaiting_email_confirmation",
       reference: "REPORT-1"
     });
@@ -415,58 +480,76 @@ describe("WasteService abandoned-waste report", () => {
     expect(photos.every((photo) => !existsSync(photo.path))).toBe(true);
   });
 
-  it("detects a modified stored payload before the city write", async () => {
-    const photoPath = path.join(dataDir, "pile.png");
+  it("invalidates and cleans a city report when the remote contract changes before dispatch", async () => {
+    const photoPath = path.join(dataDir, "pile-drift.png");
     await sharp({ create: { width: 16, height: 16, channels: 3, background: "red" } }).png().toFile(photoPath);
     const { WasteService } = await import("../src/waste/waste-service.js");
-    const { wasteConfirmationPaths } = await import("../src/waste/confirmation-storage.js");
     const potsdamClient = fakePotsdamClient();
-    const confirmationId = "33333333-3333-4333-8333-333333333333";
     const service = new WasteService(emptyPortalClient(), {
       defaultsProvider: unusedDefaults(),
       swpClient: fakeSwpClient(),
       potsdamClient,
-      now: () => NOW,
-      confirmationId: () => confirmationId
+      now: () => NOW
     });
-
-    await service.requestAbandonedWasteReportCommit({
+    const staged = await service.stageAbandonedWasteReport({
       contact: { email: "erika@example.test" },
       location: { latitude: 52.4, longitude: 13.05 },
       description: "Ein Bett steht neben den Mülltonnen.",
       photoPaths: [photoPath],
       privacyConsent: true
     });
-    const confirmationPath = path.join(wasteConfirmationPaths.confirmationsDir, `${confirmationId}.json`);
-    const stored = JSON.parse(await readFile(confirmationPath, "utf8")) as {
-      remoteFingerprint: string;
-      payload: {
-        draft: { description: string };
-        location: unknown;
-        photos: unknown;
-        approvedDigest: string;
+    const current = await potsdamClient.inspectConfig();
+    potsdamClient.inspectConfig.mockResolvedValue({ ...current, fingerprint: "c".repeat(64) });
+
+    await expect(service.commitPendingWrite(staged.pendingWriteHandle!, "potsdam_abandoned_waste")).resolves.toMatchObject({
+      outcome: "notSent",
+      summary: expect.stringContaining("changed after review")
+    });
+    expect(potsdamClient.commit).not.toHaveBeenCalled();
+    const { pendingWriteArtifactsDir } = await import("../src/storage.js");
+    expect(existsSync(pendingWriteArtifactsDir(staged.pendingWriteHandle!))).toBe(false);
+  });
+
+  it("detects a modified HMAC-protected payload before the city write", async () => {
+    const photoPath = path.join(dataDir, "pile.png");
+    await sharp({ create: { width: 16, height: 16, channels: 3, background: "red" } }).png().toFile(photoPath);
+    const { WasteService } = await import("../src/waste/waste-service.js");
+    const { paths } = await import("../src/storage.js");
+    const potsdamClient = fakePotsdamClient();
+    const pendingWriteHandle = "33333333-3333-4333-8333-333333333333";
+    const service = new WasteService(emptyPortalClient(), {
+      defaultsProvider: unusedDefaults(),
+      swpClient: fakeSwpClient(),
+      potsdamClient,
+      now: () => NOW,
+      pendingWriteHandle: () => pendingWriteHandle
+    });
+
+    await service.stageAbandonedWasteReport({
+      contact: { email: "erika@example.test" },
+      location: { latitude: 52.4, longitude: 13.05 },
+      description: "Ein Bett steht neben den Mülltonnen.",
+      photoPaths: [photoPath],
+      privacyConsent: true
+    });
+    const pendingPath = path.join(paths.pendingWritesDir, `${pendingWriteHandle}.json`);
+    const stored = JSON.parse(await readFile(pendingPath, "utf8")) as {
+      pendingWrite: {
+        payload: {
+          draft: { description: string };
+        };
       };
     };
-    stored.payload.draft.description = "Geänderter Text";
-    const content = {
-      draft: stored.payload.draft,
-      location: stored.payload.location,
-      photos: stored.payload.photos
-    };
-    stored.payload.approvedDigest = createHash("sha256").update(JSON.stringify({
-      kind: "potsdam_abandoned_waste",
-      fingerprint: stored.remoteFingerprint,
-      content
-    })).digest("hex");
-    await writeFile(confirmationPath, `${JSON.stringify(stored)}\n`, { mode: 0o600 });
+    stored.pendingWrite.payload.draft.description = "Geänderter Text";
+    await writeFile(pendingPath, `${JSON.stringify(stored)}\n`, { mode: 0o600 });
 
-    await expect(service.commitAbandonedWasteReport(confirmationId)).rejects.toMatchObject({
-      code: "CONFIRMATION_TAMPERED"
+    await expect(service.commitPendingWrite(pendingWriteHandle, "potsdam_abandoned_waste")).resolves.toMatchObject({
+      outcome: "notSent"
     });
     expect(potsdamClient.commit).not.toHaveBeenCalled();
   });
 
-  it("surfaces an uncertain city outcome, consumes the confirmation, and cleans photos", async () => {
+  it("surfaces an uncertain city outcome, consumes the pending action, and cleans photos", async () => {
     const photoPath = path.join(dataDir, "pile.png");
     await sharp({ create: { width: 16, height: 16, channels: 3, background: "red" } }).png().toFile(photoPath);
     const { PotsdamWasteError } = await import("../src/potsdam/index.js");
@@ -481,9 +564,9 @@ describe("WasteService abandoned-waste report", () => {
       swpClient: fakeSwpClient(),
       potsdamClient,
       now: () => NOW,
-      confirmationId: () => "88888888-8888-4888-8888-888888888888"
+      pendingWriteHandle: () => "88888888-8888-4888-8888-888888888888"
     });
-    const requested = await service.requestAbandonedWasteReportCommit({
+    const requested = await service.stageAbandonedWasteReport({
       contact: { email: "erika@example.test" },
       location: { latitude: 52.4, longitude: 13.05 },
       description: "Ein Bett steht neben den Mülltonnen.",
@@ -491,18 +574,51 @@ describe("WasteService abandoned-waste report", () => {
       privacyConsent: true
     });
 
-    await expect(service.commitAbandonedWasteReport(requested.confirmationId!)).rejects.toMatchObject({
-      code: "POTSDAM_WASTE_AMBIGUOUS_WRITE",
-      details: { outcomeUncertain: true }
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "potsdam_abandoned_waste")).resolves.toMatchObject({
+      outcome: "outcomeUncertain",
+      summary: expect.stringContaining("Do not retry automatically")
     });
     const staged = potsdamClient.commit.mock.calls[0]![1][0]!;
     expect(existsSync(staged.path)).toBe(false);
-    await expect(service.commitAbandonedWasteReport(requested.confirmationId!)).rejects.toMatchObject({
-      code: "CONFIRMATION_NOT_FOUND"
+    await expect(service.commitPendingWrite(requested.pendingWriteHandle!, "potsdam_abandoned_waste")).resolves.toMatchObject({
+      outcome: "notSent"
     });
+    expect(potsdamClient.commit).toHaveBeenCalledOnce();
   });
 
-  it("rejects a normalized photo that exceeds the discovered live output limit before confirmation", async () => {
+  it("reports a definitive city limit response as rejected", async () => {
+    const photoPath = path.join(dataDir, "pile-rejected.png");
+    await sharp({ create: { width: 16, height: 16, channels: 3, background: "red" } }).png().toFile(photoPath);
+    const { PotsdamWasteError } = await import("../src/potsdam/index.js");
+    const { WasteService } = await import("../src/waste/waste-service.js");
+    const potsdamClient = fakePotsdamClient();
+    potsdamClient.commit.mockRejectedValueOnce(new PotsdamWasteError(
+      "The portal's maximum report count has been reached.",
+      "MAX_REPORTS_REACHED",
+      429
+    ));
+    const service = new WasteService(emptyPortalClient(), {
+      defaultsProvider: unusedDefaults(),
+      swpClient: fakeSwpClient(),
+      potsdamClient,
+      now: () => NOW
+    });
+    const staged = await service.stageAbandonedWasteReport({
+      contact: { email: "erika@example.test" },
+      location: { latitude: 52.4, longitude: 13.05 },
+      description: "Ein Bett steht neben den Mülltonnen.",
+      photoPaths: [photoPath],
+      privacyConsent: true
+    });
+
+    await expect(service.commitPendingWrite(staged.pendingWriteHandle!, "potsdam_abandoned_waste")).resolves.toMatchObject({
+      outcome: "rejected",
+      status: 429
+    });
+    expect(potsdamClient.commit).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a normalized photo that exceeds the discovered live output limit before staging", async () => {
     const photoPath = path.join(dataDir, "pile.png");
     await sharp({ create: { width: 32, height: 32, channels: 3, background: "blue" } }).png().toFile(photoPath);
     const { WasteService } = await import("../src/waste/waste-service.js");
@@ -517,10 +633,10 @@ describe("WasteService abandoned-waste report", () => {
       swpClient: fakeSwpClient(),
       potsdamClient,
       now: () => NOW,
-      confirmationId: () => "99999999-9999-4999-8999-999999999999"
+      pendingWriteHandle: () => "99999999-9999-4999-8999-999999999999"
     });
 
-    const requested = await service.requestAbandonedWasteReportCommit({
+    const requested = await service.stageAbandonedWasteReport({
       contact: { email: "erika@example.test" },
       location: { latitude: 52.4, longitude: 13.05 },
       description: "Ein Bett steht neben den Mülltonnen.",
@@ -529,7 +645,7 @@ describe("WasteService abandoned-waste report", () => {
     });
 
     expect(requested.ok).toBe(false);
-    expect(requested.confirmationId).toBeUndefined();
+    expect(requested.pendingWriteHandle).toBeUndefined();
     expect(requested.validationIssues).toContain("A normalized photo exceeds the current live photo-size limit.");
     expect(potsdamClient.commit).not.toHaveBeenCalled();
   });

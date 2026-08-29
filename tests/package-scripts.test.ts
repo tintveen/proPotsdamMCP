@@ -12,6 +12,7 @@ describe("package scripts", () => {
     expect(pkg.scripts["auth:set"]).toBe("node dist/cli.js auth set");
     expect(pkg.scripts.discover).toBe("node dist/cli.js discover");
     expect(pkg.scripts.actions).toBe("node dist/cli.js actions");
+    expect(pkg.scripts.build).toContain("rmSync('dist'");
     expect(pkg.scripts.prepack).toBe("npm run build");
     expect(pkg.scripts["release:check"]).toContain("npm pack --dry-run");
   });

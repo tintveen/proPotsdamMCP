@@ -1,6 +1,6 @@
 {
   "name": "propotsdam-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local MCP server for the ProPotsdam customer portal",
   "type": "module",
   "bin": {
@@ -23,7 +23,7 @@
   },
   "homepage": "https://github.com/tintveen/proPotsdamMCP#readme",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "auth:set": "node dist/cli.js auth set",
     "discover": "node dist/cli.js discover",

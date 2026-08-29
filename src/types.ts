@@ -420,11 +420,38 @@ export interface PreparedPortalWrite {
   draft?: PreparedPortalAction["draft"];
 }
 
-export type PendingPortalWriteState = "staged" | "claimed";
+export type PendingWriteKind = "portal_action" | "swp_bulky_waste" | "potsdam_abandoned_waste";
+export type PendingWriteWorkflow = "portal_action" | "bulky_waste_pickup" | "abandoned_waste_report";
+export type PendingWriteState = "staged" | "claimed";
 
-export interface PendingPortalWrite {
+export interface PendingWriteBase {
   pendingWriteHandle: string;
-  state: PendingPortalWriteState;
+  state: PendingWriteState;
+  kind: PendingWriteKind;
+  workflow: PendingWriteWorkflow;
+  destination: string;
+  contractFingerprint: string;
+  review: string[];
+  warnings: string[];
+  privacyUrls: string[];
+  createdAt: string;
+  expiresAt: string;
+  claimedAt?: string;
+}
+
+export interface PendingWriteArtifact {
+  filePath: string;
+  filename: string;
+  mimeType: string;
+  byteLength: number;
+  sha256: string;
+}
+
+export type PendingPortalWriteState = PendingWriteState;
+
+export interface PendingPortalWrite extends PendingWriteBase {
+  kind: "portal_action";
+  workflow: "portal_action";
   accountId: string;
   domain: PortalWriteDomain;
   actionId: string;
@@ -435,17 +462,25 @@ export interface PendingPortalWrite {
   recordTitle?: string;
   xuclass?: string;
   serviceUrl?: string;
-  contractFingerprint: string;
   values: Record<string, string>;
   diff: PortalActionDiffEntry[];
   attachments?: StagedPortalAttachment[];
-  createdAt: string;
-  expiresAt: string;
-  claimedAt?: string;
 }
+
+export interface PendingWasteWrite extends PendingWriteBase {
+  kind: "swp_bulky_waste" | "potsdam_abandoned_waste";
+  workflow: "bulky_waste_pickup" | "abandoned_waste_report";
+  payload: unknown;
+  artifacts?: PendingWriteArtifact[];
+}
+
+export type PendingWrite = PendingPortalWrite | PendingWasteWrite;
 
 export interface PendingPortalWriteSummary {
   pendingWriteHandle: string;
+  kind: "portal_action";
+  workflow: "portal_action";
+  destination: string;
   accountId: string;
   domain: PortalWriteDomain;
   actionId: string;
@@ -458,6 +493,9 @@ export interface PendingPortalWriteSummary {
   attachments?: PortalAttachmentReview[];
   createdAt: string;
   expiresAt: string;
+  review: string[];
+  warnings: string[];
+  privacyUrls: string[];
   requiresExplicitApproval: true;
 }
 
@@ -471,7 +509,28 @@ export interface CancelPendingWritesResult {
   missingHandles: string[];
 }
 
-export type PortalWriteOutcome = "succeeded" | "notSent" | "rejected" | "outcomeUncertain";
+export interface PendingWriteSummary {
+  pendingWriteHandle: string;
+  kind: PendingWriteKind;
+  workflow: PendingWriteWorkflow;
+  destination: string;
+  review: string[];
+  warnings: string[];
+  privacyUrls: string[];
+  createdAt: string;
+  expiresAt: string;
+  requiresExplicitApproval: true;
+  target?: PortalWriteTargetReview;
+  diff?: PortalActionDiffEntry[];
+  attachments?: PortalAttachmentReview[];
+}
+
+export interface PendingWriteList {
+  items: PendingWriteSummary[];
+}
+
+export type WriteOutcome = "succeeded" | "notSent" | "rejected" | "outcomeUncertain";
+export type PortalWriteOutcome = WriteOutcome;
 
 export interface PortalCommitResult {
   ok: boolean;
@@ -497,4 +556,27 @@ export interface PortalCommitBatchResult {
   attemptedCount: number;
   counts: Record<PortalWriteOutcome, number>;
   results: PortalCommitResult[];
+}
+
+export interface PendingWriteCommitResult {
+  ok: boolean;
+  outcome: WriteOutcome;
+  pendingWriteHandle: string;
+  kind: PendingWriteKind | "unknown";
+  workflow: PendingWriteWorkflow | "unknown";
+  completedAt: string;
+  summary: string;
+  status?: number;
+  reference?: string;
+  state?: "request_received" | "awaiting_email_confirmation";
+  warnings?: string[];
+  portal?: PortalCommitResult;
+}
+
+export interface PendingWriteCommitBatchResult {
+  ok: boolean;
+  partial: boolean;
+  attemptedCount: number;
+  counts: Record<WriteOutcome, number>;
+  results: PendingWriteCommitResult[];
 }

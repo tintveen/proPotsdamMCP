@@ -14,6 +14,8 @@ describe("conversational approval evaluation corpus", () => {
       "expiry",
       "individual_selection",
       "subset_selection",
+      "mixed_batch",
+      "ui_approval",
       "unlimited_explicit_batch"
     ]));
   });
@@ -36,5 +38,19 @@ describe("conversational approval evaluation corpus", () => {
 
     expect(batch.displayedHandles.length).toBeGreaterThan(10);
     expect(batch.expected.handles).toEqual(batch.displayedHandles);
+  });
+
+  it("permits mixed destinations and requires approval controls to create a visible user message", () => {
+    const mixed = corpus.cases.find((testCase) => testCase.category === "mixed_batch")!;
+    const uiCases = corpus.cases.filter((testCase) => testCase.category === "ui_approval");
+
+    expect(new Set(mixed.displayedKinds)).toEqual(new Set([
+      "portal_action",
+      "swp_bulky_waste",
+      "potsdam_abandoned_waste"
+    ]));
+    expect(mixed.expected.handles).toEqual(mixed.displayedHandles);
+    expect(uiCases.find((testCase) => testCase.messageSource === "approval_control_visible_user_message")?.expected.decision).toBe("commit");
+    expect(uiCases.find((testCase) => testCase.messageSource === "approval_control_direct_tool_event")?.expected.decision).toBe("wait");
   });
 });
