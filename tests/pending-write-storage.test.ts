@@ -52,7 +52,7 @@ describe("shared pending-action storage", () => {
     await expect(stat(storage.pendingWriteArtifactsDir(pending.pendingWriteHandle))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("atomically permits exactly one claim and sweeps an expired claimed artifact after restart", async () => {
+  it("protects an active claim from maintenance and sweeps it only after a stale restart window", async () => {
     const { storage } = await createStorage();
     const pending = await stagedPotsdamWrite(storage, "pending-claim-1", "2026-08-15T10:10:00.000Z");
     await storage.savePendingWrite(pending);
@@ -61,8 +61,14 @@ describe("shared pending-action storage", () => {
       Array.from({ length: 12 }, () => storage.claimPendingWrite(pending.pendingWriteHandle, new Date("2026-08-15T10:05:00.000Z")))
     );
     expect(claims.filter(Boolean)).toHaveLength(1);
-    await expect(storage.deleteExpiredPendingWrites(new Date("2026-08-15T10:10:00.000Z"))).resolves.toBe(1);
-    await expect(stat(storage.pendingWriteArtifactsDir(pending.pendingWriteHandle))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(storage.deleteExpiredPendingWrites(new Date("2026-08-15T10:20:00.000Z"))).resolves.toBe(0);
+    await expect(stat(storage.pendingWriteArtifactsDir(pending.pendingWriteHandle))).resolves.toBeDefined();
+
+    vi.resetModules();
+    const restarted = await import("../src/storage.js");
+    await expect(restarted.deleteExpiredPendingWrites(new Date("2026-08-15T10:14:59.999Z"))).resolves.toBe(0);
+    await expect(restarted.deleteExpiredPendingWrites(new Date("2026-08-15T10:15:00.000Z"))).resolves.toBe(1);
+    await expect(stat(restarted.pendingWriteArtifactsDir(pending.pendingWriteHandle))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("lists each pending action once and removes only old orphan artifact directories", async () => {

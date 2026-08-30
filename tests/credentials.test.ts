@@ -262,7 +262,7 @@ describe("pending-write storage hardening", () => {
     process.env.PROPPOTSDAM_DATA_DIR = tempDir;
     vi.resetModules();
 
-    const { claimPendingWrite, deleteExpiredPendingWrites, ensureStorageDirs, paths, savePendingWrite } = await import("../src/storage.js");
+    const { claimPendingWrite, ensureStorageDirs, paths, savePendingWrite } = await import("../src/storage.js");
     await ensureStorageDirs();
     await mkdir(path.join(paths.pendingWritesDir, "nested"));
     await savePendingWrite(testPendingWrite("expired-1", "2099-05-03T09:00:00.000Z"));
@@ -276,7 +276,9 @@ describe("pending-write storage hardening", () => {
       "utf8"
     );
 
-    await expect(deleteExpiredPendingWrites(new Date("2099-05-03T10:00:00.000Z"))).resolves.toBe(3);
+    vi.resetModules();
+    const restarted = await import("../src/storage.js");
+    await expect(restarted.deleteExpiredPendingWrites(new Date("2099-05-03T10:00:00.000Z"))).resolves.toBe(3);
     await expect(readdir(paths.pendingWritesDir)).resolves.toEqual(expect.arrayContaining([
       "bad_id.json",
       "future-1.json"

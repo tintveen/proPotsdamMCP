@@ -12,6 +12,9 @@ import type { PendingWrite, PortalConfig, StoredSession } from "./types.js";
 
 export const PENDING_WRITE_ENVELOPE_VERSION = 1 as const;
 export const PENDING_WRITE_TTL_MS = 10 * 60 * 1_000;
+export const PENDING_WRITE_CLAIM_STALE_MS = 10 * 60 * 1_000;
+
+const activePendingWriteClaims = new Map<string, symbol>();
 
 const defaultDataDir = path.join(process.env.HOME ?? ".", "Library", "Application Support", APP_NAME);
 const dataDir = process.env.PROPPOTSDAM_DATA_DIR ?? defaultDataDir;
@@ -153,9 +156,15 @@ export async function claimPendingWrite(pendingWriteHandle: string, now = new Da
   }
   const stagedPath = pendingWritePath(pendingWriteHandle, "staged");
   const claimedPath = pendingWritePath(pendingWriteHandle, "claimed");
+  const claimToken = Symbol(pendingWriteHandle);
+  if (activePendingWriteClaims.has(pendingWriteHandle)) {
+    return null;
+  }
+  activePendingWriteClaims.set(pendingWriteHandle, claimToken);
   try {
     await rename(stagedPath, claimedPath);
   } catch (error) {
+    releaseActivePendingWriteClaim(pendingWriteHandle, claimToken);
     if (isMissingFileError(error)) {
       return null;
     }
@@ -166,8 +175,15 @@ export async function claimPendingWrite(pendingWriteHandle: string, now = new Da
     state: "claimed",
     claimedAt: now.toISOString()
   };
-  await writePendingWriteEnvelope(claimedPath, claimed);
-  return claimed;
+  try {
+    await writePendingWriteEnvelope(claimedPath, claimed);
+    return claimed;
+  } catch (error) {
+    releaseActivePendingWriteClaim(pendingWriteHandle, claimToken);
+    await rm(claimedPath, { force: true }).catch(() => undefined);
+    await deletePendingWriteArtifacts(pendingWriteHandle).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function deletePendingWrite(pendingWriteHandle: string): Promise<boolean> {
@@ -188,9 +204,13 @@ export async function deletePendingWrite(pendingWriteHandle: string): Promise<bo
 }
 
 export async function deleteClaimedPendingWrite(pendingWriteHandle: string): Promise<void> {
-  await ensureStorageDirs();
-  await rm(pendingWritePath(pendingWriteHandle, "claimed"), { force: true });
-  await deletePendingWriteArtifacts(pendingWriteHandle);
+  try {
+    await ensureStorageDirs();
+    await rm(pendingWritePath(pendingWriteHandle, "claimed"), { force: true });
+    await deletePendingWriteArtifacts(pendingWriteHandle);
+  } finally {
+    activePendingWriteClaims.delete(pendingWriteHandle);
+  }
 }
 
 export async function deleteExpiredPendingWrites(now = new Date()): Promise<number> {
@@ -214,14 +234,28 @@ export async function deleteExpiredPendingWrites(now = new Date()): Promise<numb
       continue;
     }
     try {
-      const parsed = await loadPendingWriteFile(filePath, handle, state);
-      const expiresAt = parsed ? Date.parse(parsed.expiresAt) : Number.NaN;
-      if (parsed && !Number.isNaN(expiresAt) && expiresAt > now.getTime()) {
+      if (claimed && activePendingWriteClaims.has(handle)) {
         continue;
       }
-      await rm(filePath, { force: true });
-      await deletePendingWriteArtifacts(handle);
-      deleted += 1;
+      const parsed = await loadPendingWriteFile(filePath, handle, state);
+      const cleanupAt = parsed
+        ? claimed
+          ? Date.parse(parsed.claimedAt!) + PENDING_WRITE_CLAIM_STALE_MS
+          : Date.parse(parsed.expiresAt)
+        : Number.NaN;
+      if (parsed && !Number.isNaN(cleanupAt) && cleanupAt > now.getTime()) {
+        continue;
+      }
+      if (!parsed && claimed) {
+        const metadata = await stat(filePath).catch(() => null);
+        const lastTransitionAt = metadata ? Math.max(metadata.ctimeMs, metadata.mtimeMs) : Number.NaN;
+        if (!Number.isNaN(lastTransitionAt) && lastTransitionAt + PENDING_WRITE_CLAIM_STALE_MS > now.getTime()) {
+          continue;
+        }
+      }
+      if (await removePendingWriteFileAndArtifacts(filePath, handle)) {
+        deleted += 1;
+      }
     } catch {
       continue;
     }
@@ -313,6 +347,25 @@ function isValidPendingWriteHandle(pendingWriteHandle: string): boolean {
 
 export async function deletePendingWriteArtifacts(pendingWriteHandle: string): Promise<void> {
   await rm(pendingWriteArtifactsDir(pendingWriteHandle), { recursive: true, force: true });
+}
+
+async function removePendingWriteFileAndArtifacts(filePath: string, pendingWriteHandle: string): Promise<boolean> {
+  try {
+    await rm(filePath);
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return false;
+    }
+    throw error;
+  }
+  await deletePendingWriteArtifacts(pendingWriteHandle);
+  return true;
+}
+
+function releaseActivePendingWriteClaim(pendingWriteHandle: string, claimToken: symbol): void {
+  if (activePendingWriteClaims.get(pendingWriteHandle) === claimToken) {
+    activePendingWriteClaims.delete(pendingWriteHandle);
+  }
 }
 
 async function loadPendingWriteFile(

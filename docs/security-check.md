@@ -9,7 +9,7 @@ This repository was reviewed for GitHub publication readiness while keeping the 
 - Searched tracked and local project files for likely secrets, credentials, cookies, CSRF tokens, API keys, private keys, `.env` files, local databases, oversized artifacts, and generated build output.
 - Confirmed `dist/`, `node_modules/`, coverage output, logs, and `.DS_Store` are ignored.
 - Reviewed local storage behavior for config, session cookies, traces, exports, and the shared ProPotsdam/STEP/Potsdam pending-action queue with private staged attachments and normalized report photos.
-- Verified versioned HMAC integrity, restart persistence, atomic single-use claiming, ten-minute expiry, legacy-confirmation invalidation, orphan cleanup, account/form/hash drift rejection, and no automatic retry after possible dispatch.
+- Verified versioned HMAC integrity, restart persistence, atomic single-use claiming, ten-minute staging expiry, active-claim maintenance isolation, stale-claim cleanup after restart, legacy-confirmation invalidation, orphan cleanup, account/form/hash drift rejection, and no automatic retry after possible dispatch.
 - Verified that read, discovery, preparation, staging, listing, cancellation, and the live-read test contain no known state-changing ProPotsdam, STEP, or Potsdam operation.
 - Verified dependency status with `npm audit` and `npm audit --omit=dev`.
 - Verified TypeScript and test health with `npm run check` and `npm test`.

@@ -316,7 +316,8 @@ The key is not exported, logged, returned through MCP, or sent to an external se
 - Claiming atomically moves it out of the staged namespace before any external write.
 - Concurrent claims produce at most one executor attempt.
 - A crash after claim never restores the action to staged state.
-- Claimed remnants found after restart are cleanup-only and never executable.
+- Maintenance skips claims that are active in the current process, including claims that outlive the original staging expiry.
+- Claimed remnants found after restart are cleanup-only, never executable, and become removable after a separate ten-minute stale-claim window.
 - Cancellation cannot remove or interrupt an already claimed action.
 - Malformed, unsupported-version, or HMAC-invalid records are non-executable and eligible for local cleanup.
 
@@ -434,6 +435,7 @@ The PRD is implemented when all of the following are true:
 - Reject a changed payload, review, fingerprint, artifact hash, state, or integrity tag.
 - Verify `0700` directories and `0600` files.
 - Prove one winner under concurrent claims and no second executor attempt.
+- Prove maintenance cannot delete an active claim or its artifacts, including during the claim transition.
 - Clean expired, cancelled, malformed, unsupported-version, claimed-remnant, and orphan-artifact records.
 - Invalidate legacy waste confirmations and unversioned incompatible records without an external request.
 - Prove each valid staged record appears exactly once in the list.
