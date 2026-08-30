@@ -1,8 +1,8 @@
 # Pre-Publication Security Check
 
-Review date: 2026-08-29
+Review date: 2026-08-30
 
-This repository was reviewed for GitHub publication readiness while keeping the repository private for now.
+This public repository was reviewed for its first npm release. The release gate covers the exact package archive and an installed-package MCP handshake without using portal credentials or contacting a live portal.
 
 ## Checks Performed
 
@@ -13,7 +13,7 @@ This repository was reviewed for GitHub publication readiness while keeping the 
 - Verified that read, discovery, preparation, staging, listing, cancellation, and the live-read test contain no known state-changing ProPotsdam, STEP, or Potsdam operation.
 - Verified dependency status with `npm audit` and `npm audit --omit=dev`.
 - Verified TypeScript and test health with `npm run check` and `npm test`.
-- Checked packaging with `npm pack --dry-run`.
+- Checked packaging with `npm run package:verify`, including the archive allowlist, a clean tarball installation, both command shims, native dependency loading, and an MCP initialize/list-tools handshake.
 
 ## Sensitive Local Paths
 
@@ -42,12 +42,13 @@ The portal password is stored through macOS Keychain using the service name `pro
 
 ## Release Checklist
 
-Before making the repository public or publishing an npm package:
+Before publishing an npm package:
 
-- Run `npm run check`.
-- Run `npm test`.
-- Run `npm audit` and `npm audit --omit=dev`.
+- Run `npm ci` from a clean checkout.
+- Run `npm run release:check`.
 - Run `git diff --check`.
-- Run `npm pack --dry-run` and confirm `src/` and `tests/` are not included.
+- Inspect `npm pack --json` and confirm the archive integrity and checksum.
 - Review `git status --short` for accidental local files.
 - Re-run a targeted secret scan after final edits.
+- Confirm the release tag exactly matches `v<package.json version>` and is contained in `main`.
+- Confirm no live portal test or write was run as part of the release.

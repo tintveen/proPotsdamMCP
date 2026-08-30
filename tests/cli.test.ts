@@ -27,6 +27,20 @@ describe("CLI", () => {
     }
   });
 
+  it("prints the package version for both global version flags", async () => {
+    const { runCli } = await import("../src/cli.js");
+
+    for (const binary of ["propotsdam-mcp", "propotsdam-cli"]) {
+      for (const flag of ["--version", "-v"]) {
+        const harness = createIo();
+        const exitCode = await runCli(["node", binary, flag], harness.io, minimalClient());
+
+        expect(exitCode).toBe(0);
+        expect(harness.stdout()).toBe("0.3.0\n");
+      }
+    }
+  });
+
   it("prints nested help for German aliases", async () => {
     const { runCli } = await import("../src/cli.js");
     const harness = createIo();
