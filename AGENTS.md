@@ -47,8 +47,8 @@
 - `npm run test:live` is opt-in only and must not be run unless the user explicitly asks for a live portal check.
 - Do not print, paste, commit, or expose portal passwords, session cookies, CSRF tokens, raw traces, exports, screenshots with personal data, or personal portal records.
 - Summarize live portal results with counts and high-level status only unless the user explicitly asks for specific redacted details.
-- Portal write commits are allowed only when the user explicitly provides a confirmation id in the same task. Read and prepare-only actions are otherwise acceptable.
-- STEP pickup and Potsdam abandoned-waste commits follow the same rule: no live external write without an explicit confirmation id in the same task.
+- Portal write commits are allowed only after the exact staged action was shown and the user explicitly approved it in a new message in the same task. Pending-action handles stay hidden and are passed only through structured tool data. Read, prepare, stage, list, and cancel actions are otherwise acceptable.
+- STEP pickup and Potsdam abandoned-waste commits follow the same conversational-approval rule: no live external write without a newly staged review and explicit approval in a later user message in the same task.
 - Automated tests must never create a real STEP pickup request or Potsdam report. Use injected fetch implementations and redacted fixtures.
 
 ## Pull Requests

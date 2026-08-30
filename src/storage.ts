@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { link, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   APP_NAME,
@@ -8,7 +8,13 @@ import {
   DEFAULT_BASE_URL,
   DEFAULT_LANGUAGE
 } from "./constants.js";
-import type { PendingPortalWrite, PortalConfig, StoredSession } from "./types.js";
+import type { PendingWrite, PortalConfig, StoredSession } from "./types.js";
+
+export const PENDING_WRITE_ENVELOPE_VERSION = 1 as const;
+export const PENDING_WRITE_TTL_MS = 10 * 60 * 1_000;
+export const PENDING_WRITE_CLAIM_STALE_MS = 10 * 60 * 1_000;
+
+const activePendingWriteClaims = new Map<string, symbol>();
 
 const defaultDataDir = path.join(process.env.HOME ?? ".", "Library", "Application Support", APP_NAME);
 const dataDir = process.env.PROPPOTSDAM_DATA_DIR ?? defaultDataDir;
@@ -21,20 +27,33 @@ export const paths = {
   exportsDir: path.join(dataDir, "exports"),
   pendingWritesDir: path.join(dataDir, "pending-writes"),
   pendingWriteKeyFile: path.join(dataDir, "pending-write.key"),
-  legacyConfirmationsDir: path.join(dataDir, "confirmations")
+  legacyConfirmationsDir: path.join(dataDir, "confirmations"),
+  legacyWasteConfirmationsDir: path.join(dataDir, "waste-confirmations")
 };
 
 interface StoredPendingWriteEnvelope {
-  pendingWrite: PendingPortalWrite;
+  version: typeof PENDING_WRITE_ENVELOPE_VERSION;
+  pendingWrite: PendingWrite;
   integrityTag: string;
 }
 
 export async function ensureStorageDirs(): Promise<void> {
-  await mkdir(paths.dataDir, { recursive: true });
-  await mkdir(paths.tracesDir, { recursive: true });
-  await mkdir(paths.exportsDir, { recursive: true });
-  await mkdir(paths.pendingWritesDir, { recursive: true });
-  await rm(paths.legacyConfirmationsDir, { recursive: true, force: true });
+  await mkdir(paths.dataDir, { recursive: true, mode: 0o700 });
+  await mkdir(paths.tracesDir, { recursive: true, mode: 0o700 });
+  await mkdir(paths.exportsDir, { recursive: true, mode: 0o700 });
+  await mkdir(paths.pendingWritesDir, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") {
+    await Promise.all([
+      chmod(paths.dataDir, 0o700),
+      chmod(paths.tracesDir, 0o700),
+      chmod(paths.exportsDir, 0o700),
+      chmod(paths.pendingWritesDir, 0o700)
+    ]);
+  }
+  await Promise.all([
+    rm(paths.legacyConfirmationsDir, { recursive: true, force: true }),
+    rm(paths.legacyWasteConfirmationsDir, { recursive: true, force: true })
+  ]);
 }
 
 export async function loadConfig(): Promise<PortalConfig> {
@@ -88,9 +107,10 @@ export async function deleteSession(): Promise<void> {
   await rm(paths.sessionFile, { force: true });
 }
 
-export async function savePendingWrite(pendingWrite: PendingPortalWrite): Promise<void> {
+export async function savePendingWrite(pendingWrite: PendingWrite): Promise<void> {
   await ensureStorageDirs();
-  if (pendingWrite.state !== "staged") {
+  assertValidPendingWriteHandle(pendingWrite.pendingWriteHandle);
+  if (!isPendingWrite(pendingWrite, pendingWrite.pendingWriteHandle, "staged")) {
     throw new Error("A new pending write must be saved in the staged state.");
   }
   const filePath = pendingWritePath(pendingWrite.pendingWriteHandle, "staged");
@@ -98,25 +118,16 @@ export async function savePendingWrite(pendingWrite: PendingPortalWrite): Promis
   await writePendingWriteEnvelope(filePath, pendingWrite, "wx");
 }
 
-export async function loadPendingWrite(pendingWriteHandle: string): Promise<PendingPortalWrite | null> {
+export async function loadPendingWrite(pendingWriteHandle: string): Promise<PendingWrite | null> {
   await ensureStorageDirs();
   const filePath = pendingWritePath(pendingWriteHandle, "staged");
-  try {
-    const envelope = JSON.parse(await readFile(filePath, "utf8")) as StoredPendingWriteEnvelope;
-    if (!await verifyPendingWriteEnvelope(envelope)) {
-      return null;
-    }
-    const parsed = envelope.pendingWrite;
-    return parsed.pendingWriteHandle === pendingWriteHandle && parsed.state === "staged" ? parsed : null;
-  } catch {
-    return null;
-  }
+  return loadPendingWriteFile(filePath, pendingWriteHandle, "staged");
 }
 
-export async function listPendingWrites(now = new Date()): Promise<PendingPortalWrite[]> {
+export async function listPendingWrites(now = new Date()): Promise<PendingWrite[]> {
   await deleteExpiredPendingWrites(now);
   const entries = await readdir(paths.pendingWritesDir, { withFileTypes: true });
-  const writes: PendingPortalWrite[] = [];
+  const writes: PendingWrite[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name.endsWith(".claimed.json")) {
       continue;
@@ -133,7 +144,7 @@ export async function listPendingWrites(now = new Date()): Promise<PendingPortal
   return writes.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
-export async function claimPendingWrite(pendingWriteHandle: string, now = new Date()): Promise<PendingPortalWrite | null> {
+export async function claimPendingWrite(pendingWriteHandle: string, now = new Date()): Promise<PendingWrite | null> {
   await ensureStorageDirs();
   const staged = await loadPendingWrite(pendingWriteHandle);
   if (!staged) {
@@ -145,21 +156,34 @@ export async function claimPendingWrite(pendingWriteHandle: string, now = new Da
   }
   const stagedPath = pendingWritePath(pendingWriteHandle, "staged");
   const claimedPath = pendingWritePath(pendingWriteHandle, "claimed");
+  const claimToken = Symbol(pendingWriteHandle);
+  if (activePendingWriteClaims.has(pendingWriteHandle)) {
+    return null;
+  }
+  activePendingWriteClaims.set(pendingWriteHandle, claimToken);
   try {
     await rename(stagedPath, claimedPath);
   } catch (error) {
+    releaseActivePendingWriteClaim(pendingWriteHandle, claimToken);
     if (isMissingFileError(error)) {
       return null;
     }
     throw error;
   }
-  const claimed: PendingPortalWrite = {
+  const claimed: PendingWrite = {
     ...staged,
     state: "claimed",
     claimedAt: now.toISOString()
   };
-  await writePendingWriteEnvelope(claimedPath, claimed);
-  return claimed;
+  try {
+    await writePendingWriteEnvelope(claimedPath, claimed);
+    return claimed;
+  } catch (error) {
+    releaseActivePendingWriteClaim(pendingWriteHandle, claimToken);
+    await rm(claimedPath, { force: true }).catch(() => undefined);
+    await deletePendingWriteArtifacts(pendingWriteHandle).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function deletePendingWrite(pendingWriteHandle: string): Promise<boolean> {
@@ -180,9 +204,13 @@ export async function deletePendingWrite(pendingWriteHandle: string): Promise<bo
 }
 
 export async function deleteClaimedPendingWrite(pendingWriteHandle: string): Promise<void> {
-  await ensureStorageDirs();
-  await rm(pendingWritePath(pendingWriteHandle, "claimed"), { force: true });
-  await deletePendingWriteArtifacts(pendingWriteHandle);
+  try {
+    await ensureStorageDirs();
+    await rm(pendingWritePath(pendingWriteHandle, "claimed"), { force: true });
+    await deletePendingWriteArtifacts(pendingWriteHandle);
+  } finally {
+    activePendingWriteClaims.delete(pendingWriteHandle);
+  }
 }
 
 export async function deleteExpiredPendingWrites(now = new Date()): Promise<number> {
@@ -194,37 +222,61 @@ export async function deleteExpiredPendingWrites(now = new Date()): Promise<numb
     if (!entry.isFile() || !entry.name.endsWith(".json")) {
       continue;
     }
-    if (entry.name.endsWith(".claimed.json")) {
-      continue;
-    }
-    const handle = entry.name.slice(0, -".json".length);
+    const claimed = entry.name.endsWith(".claimed.json");
+    const suffix = claimed ? ".claimed.json" : ".json";
+    const handle = entry.name.slice(0, -suffix.length);
     if (!isValidPendingWriteHandle(handle)) {
       continue;
     }
-    const filePath = pendingWritePath(handle, "staged");
+    const state = claimed ? "claimed" : "staged";
+    const filePath = pendingWritePath(handle, state);
     if (path.dirname(path.resolve(filePath)) !== pendingWritesDir) {
       continue;
     }
     try {
-      const parsed = await loadPendingWrite(handle);
-      if (!parsed) {
-        if (await deletePendingWrite(handle)) {
-          deleted += 1;
+      if (claimed && activePendingWriteClaims.has(handle)) {
+        continue;
+      }
+      const parsed = await loadPendingWriteFile(filePath, handle, state);
+      const cleanupAt = parsed
+        ? claimed
+          ? Date.parse(parsed.claimedAt!) + PENDING_WRITE_CLAIM_STALE_MS
+          : Date.parse(parsed.expiresAt)
+        : Number.NaN;
+      if (parsed && !Number.isNaN(cleanupAt) && cleanupAt > now.getTime()) {
+        continue;
+      }
+      if (!parsed && claimed) {
+        const metadata = await stat(filePath).catch(() => null);
+        const lastTransitionAt = metadata ? Math.max(metadata.ctimeMs, metadata.mtimeMs) : Number.NaN;
+        if (!Number.isNaN(lastTransitionAt) && lastTransitionAt + PENDING_WRITE_CLAIM_STALE_MS > now.getTime()) {
+          continue;
         }
-        continue;
       }
-      if (typeof parsed.expiresAt !== "string") {
-        continue;
+      if (await removePendingWriteFileAndArtifacts(filePath, handle)) {
+        deleted += 1;
       }
-      const expiresAt = Date.parse(parsed.expiresAt);
-      if (Number.isNaN(expiresAt) || expiresAt > now.getTime()) {
-        continue;
-      }
-      await rm(filePath, { force: true });
-      await deletePendingWriteArtifacts(handle);
-      deleted += 1;
     } catch {
       continue;
+    }
+  }
+
+  const afterFiles = await readdir(pendingWritesDir, { withFileTypes: true });
+  for (const entry of afterFiles) {
+    if (!entry.isDirectory() || !isValidPendingWriteHandle(entry.name)) {
+      continue;
+    }
+    const handle = entry.name;
+    const [staged, claimed] = await Promise.all([
+      stat(pendingWritePath(handle, "staged")).then(() => true).catch(() => false),
+      stat(pendingWritePath(handle, "claimed")).then(() => true).catch(() => false)
+    ]);
+    if (staged || claimed) {
+      continue;
+    }
+    const metadata = await stat(pendingWriteArtifactsDir(handle)).catch(() => null);
+    if (metadata && metadata.mtimeMs <= now.getTime() - PENDING_WRITE_TTL_MS) {
+      await deletePendingWriteArtifacts(handle);
     }
   }
   return deleted;
@@ -297,15 +349,127 @@ export async function deletePendingWriteArtifacts(pendingWriteHandle: string): P
   await rm(pendingWriteArtifactsDir(pendingWriteHandle), { recursive: true, force: true });
 }
 
+async function removePendingWriteFileAndArtifacts(filePath: string, pendingWriteHandle: string): Promise<boolean> {
+  try {
+    await rm(filePath);
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return false;
+    }
+    throw error;
+  }
+  await deletePendingWriteArtifacts(pendingWriteHandle);
+  return true;
+}
+
+function releaseActivePendingWriteClaim(pendingWriteHandle: string, claimToken: symbol): void {
+  if (activePendingWriteClaims.get(pendingWriteHandle) === claimToken) {
+    activePendingWriteClaims.delete(pendingWriteHandle);
+  }
+}
+
+async function loadPendingWriteFile(
+  filePath: string,
+  expectedHandle: string,
+  expectedState: "staged" | "claimed"
+): Promise<PendingWrite | null> {
+  try {
+    const envelope = JSON.parse(await readFile(filePath, "utf8")) as StoredPendingWriteEnvelope;
+    if (!await verifyPendingWriteEnvelope(envelope)) {
+      return null;
+    }
+    return isPendingWrite(envelope.pendingWrite, expectedHandle, expectedState)
+      ? envelope.pendingWrite
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPendingWrite(
+  value: unknown,
+  expectedHandle: string,
+  expectedState: "staged" | "claimed"
+): value is PendingWrite {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<PendingWrite> & Record<string, unknown>;
+  if (
+    candidate.pendingWriteHandle !== expectedHandle
+    || !isValidPendingWriteHandle(expectedHandle)
+    || candidate.state !== expectedState
+    || typeof candidate.destination !== "string"
+    || candidate.destination.length === 0
+    || typeof candidate.contractFingerprint !== "string"
+    || candidate.contractFingerprint.length === 0
+    || !isStringArray(candidate.review)
+    || !isStringArray(candidate.warnings)
+    || !isStringArray(candidate.privacyUrls)
+    || !isIsoDate(candidate.createdAt)
+    || !isIsoDate(candidate.expiresAt)
+    || (expectedState === "claimed" && !isIsoDate(candidate.claimedAt))
+  ) {
+    return false;
+  }
+
+  if (candidate.kind === "portal_action" && candidate.workflow === "portal_action") {
+    return typeof candidate.accountId === "string"
+      && typeof candidate.domain === "string"
+      && typeof candidate.actionId === "string"
+      && typeof candidate.actionTitle === "string"
+      && Boolean(candidate.values && typeof candidate.values === "object" && !Array.isArray(candidate.values))
+      && Array.isArray(candidate.diff);
+  }
+
+  const validWasteKind = candidate.kind === "swp_bulky_waste" || candidate.kind === "potsdam_abandoned_waste";
+  const matchingWorkflow = (candidate.kind === "swp_bulky_waste" && candidate.workflow === "bulky_waste_pickup")
+    || (candidate.kind === "potsdam_abandoned_waste" && candidate.workflow === "abandoned_waste_report");
+  if (!validWasteKind || !matchingWorkflow || !("payload" in candidate)) {
+    return false;
+  }
+  if (candidate.artifacts === undefined) {
+    return true;
+  }
+  if (!Array.isArray(candidate.artifacts)) {
+    return false;
+  }
+  const artifactsDirectory = pendingWriteArtifactsDir(expectedHandle);
+  return candidate.artifacts.every((artifact) => {
+    if (!artifact || typeof artifact !== "object") {
+      return false;
+    }
+    const item = artifact as unknown as Record<string, unknown>;
+    return typeof item.filePath === "string"
+      && path.dirname(path.resolve(item.filePath)) === artifactsDirectory
+      && typeof item.filename === "string"
+      && path.basename(item.filePath) === item.filename
+      && typeof item.mimeType === "string"
+      && Number.isSafeInteger(item.byteLength)
+      && Number(item.byteLength) >= 0
+      && typeof item.sha256 === "string"
+      && /^[0-9a-f]{64}$/.test(item.sha256);
+  });
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isIsoDate(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
 async function writePendingWriteEnvelope(
   filePath: string,
-  pendingWrite: PendingPortalWrite,
+  pendingWrite: PendingWrite,
   flag?: "wx"
 ): Promise<void> {
   const key = await loadPendingWriteIntegrityKey();
   const envelope: StoredPendingWriteEnvelope = {
+    version: PENDING_WRITE_ENVELOPE_VERSION,
     pendingWrite,
-    integrityTag: pendingWriteIntegrityTag(pendingWrite, key)
+    integrityTag: pendingWriteIntegrityTag(PENDING_WRITE_ENVELOPE_VERSION, pendingWrite, key)
   };
   const serialized = `${JSON.stringify(envelope, null, 2)}\n`;
   if (flag === "wx") {
@@ -316,7 +480,7 @@ async function writePendingWriteEnvelope(
 }
 
 async function verifyPendingWriteEnvelope(envelope: StoredPendingWriteEnvelope): Promise<boolean> {
-  if (!envelope?.pendingWrite || typeof envelope.integrityTag !== "string") {
+  if (envelope?.version !== PENDING_WRITE_ENVELOPE_VERSION || !envelope.pendingWrite || typeof envelope.integrityTag !== "string") {
     return false;
   }
   const actual = Buffer.from(envelope.integrityTag, "hex");
@@ -324,17 +488,21 @@ async function verifyPendingWriteEnvelope(envelope: StoredPendingWriteEnvelope):
     return false;
   }
   const key = await loadPendingWriteIntegrityKey();
-  const expected = Buffer.from(pendingWriteIntegrityTag(envelope.pendingWrite, key), "hex");
+  const expected = Buffer.from(pendingWriteIntegrityTag(envelope.version, envelope.pendingWrite, key), "hex");
   return timingSafeEqual(actual, expected);
 }
 
-function pendingWriteIntegrityTag(pendingWrite: PendingPortalWrite, key: Buffer): string {
-  return createHmac("sha256", key).update(JSON.stringify(pendingWrite)).digest("hex");
+function pendingWriteIntegrityTag(version: number, pendingWrite: PendingWrite, key: Buffer): string {
+  return createHmac("sha256", key).update(JSON.stringify({ version, pendingWrite })).digest("hex");
 }
 
 async function loadPendingWriteIntegrityKey(): Promise<Buffer> {
   try {
-    return decodePendingWriteIntegrityKey(await readFile(paths.pendingWriteKeyFile, "utf8"));
+    const key = decodePendingWriteIntegrityKey(await readFile(paths.pendingWriteKeyFile, "utf8"));
+    if (process.platform !== "win32") {
+      await chmod(paths.pendingWriteKeyFile, 0o600);
+    }
+    return key;
   } catch (error) {
     if (!isMissingFileError(error)) {
       throw error;

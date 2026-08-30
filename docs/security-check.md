@@ -1,6 +1,6 @@
 # Pre-Publication Security Check
 
-Review date: 2026-08-28
+Review date: 2026-08-29
 
 This repository was reviewed for GitHub publication readiness while keeping the repository private for now.
 
@@ -8,9 +8,9 @@ This repository was reviewed for GitHub publication readiness while keeping the 
 
 - Searched tracked and local project files for likely secrets, credentials, cookies, CSRF tokens, API keys, private keys, `.env` files, local databases, oversized artifacts, and generated build output.
 - Confirmed `dist/`, `node_modules/`, coverage output, logs, and `.DS_Store` are ignored.
-- Reviewed local storage behavior for config, session cookies, traces, exports, ProPotsdam pending writes and private staged attachments, and external-workflow confirmations and normalized report photos.
-- Verified atomic single-use claiming, ten-minute expiry, legacy-confirmation invalidation, account/form/hash drift rejection, and no automatic retry after dispatch.
-- Verified that read, discovery, preparation, staging, listing, cancellation, and the live-read test contain no known state-changing portal operation.
+- Reviewed local storage behavior for config, session cookies, traces, exports, and the shared ProPotsdam/STEP/Potsdam pending-action queue with private staged attachments and normalized report photos.
+- Verified versioned HMAC integrity, restart persistence, atomic single-use claiming, ten-minute staging expiry, active-claim maintenance isolation, stale-claim cleanup after restart, legacy-confirmation invalidation, orphan cleanup, account/form/hash drift rejection, and no automatic retry after possible dispatch.
+- Verified that read, discovery, preparation, staging, listing, cancellation, and the live-read test contain no known state-changing ProPotsdam, STEP, or Potsdam operation.
 - Verified dependency status with `npm audit` and `npm audit --omit=dev`.
 - Verified TypeScript and test health with `npm run check` and `npm test`.
 - Checked packaging with `npm pack --dry-run`.
@@ -26,7 +26,6 @@ Runtime data is local by design and must not be committed or pasted into public 
 ~/Library/Application Support/propotsdam-mcp/traces/
 ~/Library/Application Support/propotsdam-mcp/exports/
 ~/Library/Application Support/propotsdam-mcp/pending-writes/
-~/Library/Application Support/propotsdam-mcp/waste-confirmations/
 ```
 
 The portal password is stored through macOS Keychain using the service name `propotsdam-mcp`.
@@ -38,7 +37,7 @@ The portal password is stored through macOS Keychain using the service name `pro
 - Live tests require a real configured account and must stay opt-in through `PROPPOTSDAM_LIVE_TEST=1`.
 - The LLM or MCP host is the approval trust boundary; the server cannot independently inspect or verify the natural-language approval message.
 - MCP tool annotations are advisory hints, not an authorization boundary.
-- An `outcomeUncertain` write may have changed portal state and must not be retried automatically.
+- An `outcomeUncertain` write may have reached ProPotsdam, STEP, or Potsdam and must not be retried automatically.
 - Public reports must never include portal credentials, cookies, CSRF tokens, screenshots with personal data, raw traces, or exported account data.
 
 ## Release Checklist

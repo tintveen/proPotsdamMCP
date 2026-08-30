@@ -987,7 +987,11 @@ describe("PortalClient HTTP flow", () => {
     });
     const { loadPendingWrite } = await import("../src/storage.js");
     const stored = await loadPendingWrite(staged.pendingWriteHandle!);
-    await writeFile(stored!.attachments![0]!.filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00]));
+    expect(stored?.kind).toBe("portal_action");
+    if (!stored || stored.kind !== "portal_action") {
+      throw new Error("Expected a staged portal action.");
+    }
+    await writeFile(stored.attachments![0]!.filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00]));
 
     await expect(commitOne(client, staged.pendingWriteHandle!)).resolves.toMatchObject({
       outcome: "notSent",

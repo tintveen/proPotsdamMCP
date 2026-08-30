@@ -256,13 +256,13 @@ describe("pending-write storage hardening", () => {
     await expect(readdir(tempDir)).resolves.toContain("outside.json");
   });
 
-  it("deletes expired staged writes while preserving future, claimed, and malformed files", async () => {
+  it("deletes expired staged and claimed writes plus malformed records while preserving future state", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
     tempDirs.push(tempDir);
     process.env.PROPPOTSDAM_DATA_DIR = tempDir;
     vi.resetModules();
 
-    const { claimPendingWrite, deleteExpiredPendingWrites, ensureStorageDirs, paths, savePendingWrite } = await import("../src/storage.js");
+    const { claimPendingWrite, ensureStorageDirs, paths, savePendingWrite } = await import("../src/storage.js");
     await ensureStorageDirs();
     await mkdir(path.join(paths.pendingWritesDir, "nested"));
     await savePendingWrite(testPendingWrite("expired-1", "2099-05-03T09:00:00.000Z"));
@@ -276,14 +276,15 @@ describe("pending-write storage hardening", () => {
       "utf8"
     );
 
-    await expect(deleteExpiredPendingWrites(new Date("2099-05-03T10:00:00.000Z"))).resolves.toBe(2);
+    vi.resetModules();
+    const restarted = await import("../src/storage.js");
+    await expect(restarted.deleteExpiredPendingWrites(new Date("2099-05-03T10:00:00.000Z"))).resolves.toBe(3);
     await expect(readdir(paths.pendingWritesDir)).resolves.toEqual(expect.arrayContaining([
       "bad_id.json",
-      "claimed-1.claimed.json",
-      "future-1.json",
-      "nested"
+      "future-1.json"
     ]));
     await expect(readdir(paths.pendingWritesDir)).resolves.not.toContain("expired-1.json");
+    await expect(readdir(paths.pendingWritesDir)).resolves.not.toContain("claimed-1.claimed.json");
     await expect(readdir(paths.pendingWritesDir)).resolves.not.toContain("malformed.json");
   });
 
@@ -294,12 +295,16 @@ describe("pending-write storage hardening", () => {
     vi.resetModules();
 
     const legacyDir = path.join(tempDir, "confirmations");
+    const legacyWasteDir = path.join(tempDir, "waste-confirmations");
     await mkdir(legacyDir, { recursive: true });
+    await mkdir(legacyWasteDir, { recursive: true });
     await writeFile(path.join(legacyDir, "old-confirmation.json"), "{}", "utf8");
+    await writeFile(path.join(legacyWasteDir, "old-confirmation.json"), "{}", "utf8");
     const { ensureStorageDirs, paths } = await import("../src/storage.js");
 
     await ensureStorageDirs();
     await expect(readdir(tempDir)).resolves.not.toContain(path.basename(paths.legacyConfirmationsDir));
+    await expect(readdir(tempDir)).resolves.not.toContain(path.basename(paths.legacyWasteConfirmationsDir));
   });
 });
 
@@ -307,6 +312,9 @@ function testPendingWrite(pendingWriteHandle: string, expiresAt = "2099-01-01T00
   return {
     pendingWriteHandle,
     state: "staged",
+    kind: "portal_action",
+    workflow: "portal_action",
+    destination: "ProPotsdam customer portal",
     accountId: "MAX",
     domain: "profile_account_setting",
     actionId: "save_partner",
@@ -322,6 +330,9 @@ function testPendingWrite(pendingWriteHandle: string, expiresAt = "2099-01-01T00
       currentValue: "+15550100000",
       proposedValue: "+15550100001"
     }],
+    review: ["Phone: +15550100000 -> +15550100001"],
+    warnings: [],
+    privacyUrls: [],
     createdAt: "2026-05-03T09:00:00.000Z",
     expiresAt
   };

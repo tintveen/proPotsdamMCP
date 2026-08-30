@@ -936,6 +936,9 @@ export class PortalClient {
     const pendingWrite: PendingPortalWrite = {
       pendingWriteHandle,
       state: "staged",
+      kind: "portal_action",
+      workflow: "portal_action",
+      destination: "ProPotsdam customer portal",
       accountId,
       domain: classifyWriteDomain(action),
       actionId: action.id,
@@ -949,6 +952,9 @@ export class PortalClient {
       contractFingerprint: actionContractFingerprint(action),
       values: Object.fromEntries(fieldDiff.map((entry) => [entry.name, entry.proposedValue])),
       diff,
+      review: portalPendingWriteReview(action, diff),
+      warnings: [],
+      privacyUrls: [],
       ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString()
@@ -983,7 +989,11 @@ export class PortalClient {
 
   async listPendingWrites(): Promise<PendingPortalWriteList> {
     const items = await listStoredPendingWrites();
-    return { items: items.map(pendingWriteSummary) };
+    return {
+      items: items
+        .filter((item): item is PendingPortalWrite => item.kind === "portal_action")
+        .map(pendingWriteSummary)
+    };
   }
 
   async cancelPendingWrites(pendingWriteHandles: string[]): Promise<CancelPendingWritesResult> {
@@ -1035,6 +1045,9 @@ export class PortalClient {
     const pendingWrite = await loadPendingWrite(pendingWriteHandle).catch(() => null);
     if (!pendingWrite) {
       return notSentCommitResult(pendingWriteHandle, "unknown", "Pending write was not found, expired, cancelled, or already used.");
+    }
+    if (pendingWrite.kind !== "portal_action") {
+      return notSentCommitResult(pendingWriteHandle, "unknown", "Pending write belongs to a different executor.");
     }
     if (Date.parse(pendingWrite.expiresAt) <= Date.now()) {
       await deletePendingWrite(pendingWriteHandle);
@@ -1144,9 +1157,9 @@ export class PortalClient {
       );
     }
 
-    let claimed: PendingPortalWrite | null;
+    let claimedWrite;
     try {
-      claimed = await claimPendingWrite(pendingWriteHandle);
+      claimedWrite = await claimPendingWrite(pendingWriteHandle);
     } catch (error) {
       await deletePendingWrite(pendingWriteHandle).catch(() => false);
       await deleteClaimedPendingWrite(pendingWriteHandle).catch(() => undefined);
@@ -1156,9 +1169,10 @@ export class PortalClient {
         `Pending write could not be claimed before dispatch: ${error instanceof Error ? error.message : String(error)}`
       );
     }
-    if (!claimed) {
+    if (!claimedWrite || claimedWrite.kind !== "portal_action") {
       return notSentCommitResult(pendingWriteHandle, pendingWrite.actionId, "Pending write could not be claimed because it expired or was already used.");
     }
+    const claimed = claimedWrite;
     let permit: PortalWritePermit;
     try {
       permit = issuePortalWritePermit(claimed, [
@@ -1809,6 +1823,9 @@ function attachmentReview(attachment: StagedPortalAttachment): PortalAttachmentR
 function pendingWriteSummary(pendingWrite: PendingPortalWrite): PendingPortalWriteSummary {
   return {
     pendingWriteHandle: pendingWrite.pendingWriteHandle,
+    kind: pendingWrite.kind,
+    workflow: pendingWrite.workflow,
+    destination: pendingWrite.destination,
     accountId: pendingWrite.accountId,
     domain: pendingWrite.domain,
     actionId: pendingWrite.actionId,
@@ -1823,8 +1840,24 @@ function pendingWriteSummary(pendingWrite: PendingPortalWrite): PendingPortalWri
       : {}),
     createdAt: pendingWrite.createdAt,
     expiresAt: pendingWrite.expiresAt,
+    review: pendingWrite.review,
+    warnings: pendingWrite.warnings,
+    privacyUrls: pendingWrite.privacyUrls,
     requiresExplicitApproval: true
   };
+}
+
+function portalPendingWriteReview(action: PortalAction, diff: PortalActionDiffEntry[]): string[] {
+  return [
+    `Destination: ProPotsdam customer portal`,
+    `Action: ${action.title}`,
+    `Target: ${action.recordTitle ?? action.serviceTitle}`,
+    ...diff.map((entry) => {
+      const label = entry.label ?? entry.name;
+      const previous = entry.currentValue === undefined ? "(empty)" : entry.currentValue;
+      return `${label}: ${previous} -> ${entry.proposedValue}`;
+    })
+  ];
 }
 
 function pendingWriteTargetReview(pendingWrite: PendingPortalWrite): StagedPortalActionResult["target"] {

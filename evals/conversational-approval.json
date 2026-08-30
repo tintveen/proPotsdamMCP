@@ -44,6 +44,14 @@
       "expected": { "decision": "restage", "tool": "propotsdam_stage_portal_action", "handles": [] }
     },
     {
+      "id": "modified_waste_instruction",
+      "category": "modification",
+      "displayedHandles": ["step-1"],
+      "displayedKinds": ["swp_bulky_waste"],
+      "userMessage": "Yes, but move the earliest pickup date to Friday.",
+      "expected": { "decision": "restage", "tool": "propotsdam_stage_bulky_waste_pickup", "handles": [] }
+    },
+    {
       "id": "refusal",
       "category": "refusal",
       "displayedHandles": ["pending-1"],
@@ -71,6 +79,30 @@
       "displayedHandles": ["pending-1", "pending-2", "pending-3"],
       "userMessage": "Send the first and third.",
       "expected": { "decision": "commit", "tool": "propotsdam_commit_pending_writes", "handles": ["pending-1", "pending-3"] }
+    },
+    {
+      "id": "mixed_destination_batch",
+      "category": "mixed_batch",
+      "displayedHandles": ["portal-1", "step-1", "potsdam-1"],
+      "displayedKinds": ["portal_action", "swp_bulky_waste", "potsdam_abandoned_waste"],
+      "userMessage": "Send all three actions exactly as shown.",
+      "expected": { "decision": "commit", "tool": "propotsdam_commit_pending_writes", "handles": ["portal-1", "step-1", "potsdam-1"] }
+    },
+    {
+      "id": "visible_ui_approval_message",
+      "category": "ui_approval",
+      "displayedHandles": ["step-1"],
+      "messageSource": "approval_control_visible_user_message",
+      "userMessage": "Approve and send the displayed STEP pickup request.",
+      "expected": { "decision": "commit", "tool": "propotsdam_commit_pending_writes", "handles": ["step-1"] }
+    },
+    {
+      "id": "ui_control_without_user_message",
+      "category": "ui_approval",
+      "displayedHandles": ["step-1"],
+      "messageSource": "approval_control_direct_tool_event",
+      "userMessage": null,
+      "expected": { "decision": "wait", "tool": null, "handles": [] }
     },
     {
       "id": "explicit_batch_no_product_cap",
