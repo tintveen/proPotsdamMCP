@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CliIo, CliPortalClient } from "../src/cli.js";
+import { PACKAGE_VERSION } from "../src/version.js";
 import type {
   AuthResult,
   CapabilityMap,
@@ -36,7 +37,7 @@ describe("CLI", () => {
         const exitCode = await runCli(["node", binary, flag], harness.io, minimalClient());
 
         expect(exitCode).toBe(0);
-        expect(harness.stdout()).toBe("0.3.0\n");
+        expect(harness.stdout()).toBe(`${PACKAGE_VERSION}\n`);
       }
     }
   });

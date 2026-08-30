@@ -34,6 +34,7 @@ import type {
   StructuredPortalRecord
 } from "./types.js";
 import { redactSecrets } from "./utils/redact.js";
+import { PACKAGE_VERSION } from "./version.js";
 
 const TRUE_VALUES = new Set(["1", "true", "yes", "y", "on", "ja", "j"]);
 
@@ -124,7 +125,7 @@ export async function runCli(
   const parsed = parseArgs(argv);
   try {
     if (parsed.version) {
-      writeOutput(io, `${await packageVersion()}\n`);
+      writeOutput(io, `${PACKAGE_VERSION}\n`);
       return 0;
     }
     if (parsed.help || parsed.positionals[0] === "help") {
@@ -810,16 +811,6 @@ function parseArgs(argv: string[]): ParsedArgs {
     help: hasFlag(flags, "help"),
     version: hasFlag(flags, "version")
   };
-}
-
-async function packageVersion(): Promise<string> {
-  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
-    version?: unknown;
-  };
-  if (typeof pkg.version !== "string" || pkg.version.length === 0) {
-    throw new Error("Package version is unavailable.");
-  }
-  return pkg.version;
 }
 
 function addFlag(flags: Map<string, string[]>, name: string, value: string): void {

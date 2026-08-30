@@ -2,9 +2,11 @@
 
 Releases are built from a clean commit on `main`, published under the protected `npm-release` GitHub environment, and attached to a matching GitHub Release. Do not run `npm run test:live` or use portal credentials during a release.
 
+Before any release tag is pushed, the `npm-release` environment must require `tintveen` as a reviewer, allow self-review for the single-owner repository, disable administrator bypass, and restrict deployments to `v*` tags.
+
 ## Prepare a Version
 
-1. Update `package.json`, `package-lock.json`, and the pinned version in `README.md` in one pull request.
+1. Update `package.json`, `package-lock.json`, and the pinned version in `README.md` in one pull request. The CLI and MCP handshake both derive their version from `package.json`.
 2. Run `npm ci`, `npm run release:check`, `git diff --check`, and a targeted secret scan.
 3. Inspect `npm pack --json` and confirm the archive contains no source, tests, credentials, traces, or personal data.
 4. Merge only after the macOS Node 22 and Node 24 checks pass and review findings are resolved.
@@ -15,9 +17,19 @@ npm requires a package to exist before trusted publishing can be configured. The
 
 1. Confirm `npm view propotsdam-mcp@0.3.0` returns `E404` and `npm whoami` shows the intended owner.
 2. Check out the `0.3.0` merge commit with a clean working tree and run `npm ci && npm run release:check`.
-3. Create the tarball with `npm pack --json`, record its SHA-512 integrity and SHA-256 checksum, and publish that exact `.tgz` using `npm publish <tarball> --access public`.
-4. Verify the public registry reports the same integrity before configuring automation.
-5. Configure the trusted publisher with npm 11.15 or newer:
+3. Create the tarball with the same pinned packer used by the release workflow. The Node.js version is pinned because different Node/zlib builds can produce different gzip bytes even when the unpacked package is identical:
+
+   ```bash
+   mkdir -p release-artifacts
+   npm exec --yes --package=node@24.18.0 --package=npm@11.16.0 -- \
+     npm pack --json --silent --pack-destination release-artifacts
+   shasum -a 256 release-artifacts/propotsdam-mcp-0.3.0.tgz \
+     > release-artifacts/propotsdam-mcp-0.3.0.tgz.sha256
+   ```
+
+4. Record the command's SHA-512 integrity and the SHA-256 checksum, then publish that exact `.tgz` using `npm publish <tarball> --access public`. Do not repack it with the ambient Node.js runtime.
+5. Verify the public registry reports the same integrity before configuring automation.
+6. Configure the trusted publisher with npm 11.15 or newer:
 
    ```bash
    npm trust github propotsdam-mcp \
@@ -27,8 +39,8 @@ npm requires a package to exist before trusted publishing can be configured. The
      --allow-publish
    ```
 
-6. In the npm package settings, require 2FA and disallow traditional publishing tokens.
-7. Create and push annotated tag `v0.3.0`, approve the `npm-release` environment, and let the workflow create the GitHub Release. The workflow accepts the existing npm version only when its integrity exactly matches the tagged archive.
+7. In the npm package settings, require 2FA and disallow traditional publishing tokens.
+8. Create and push annotated tag `v0.3.0`, approve the `npm-release` environment, and let the workflow create the GitHub Release. The workflow accepts the existing npm version only when its integrity exactly matches the tagged archive.
 
 The first version is published interactively and therefore has no GitHub provenance attestation. Later OIDC releases receive provenance automatically.
 
