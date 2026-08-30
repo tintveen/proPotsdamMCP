@@ -4,6 +4,7 @@ import { PortalError } from "./errors.js";
 import { PendingWriteService, type PendingWriteServiceLike } from "./pending-write-service.js";
 import { PortalClient } from "./portal/portal-client.js";
 import { redactSecrets } from "./utils/redact.js";
+import { PACKAGE_VERSION } from "./version.js";
 import { WasteService } from "./waste/waste-service.js";
 import type { WasteServiceLike } from "./waste/types.js";
 
@@ -60,7 +61,7 @@ export function createServer(
 ): McpServer {
   const server = new McpServer({
     name: "proPotsdam MCP",
-    version: "0.3.0"
+    version: PACKAGE_VERSION
   });
 
   registerJsonTool(server, "propotsdam_auth_status", {

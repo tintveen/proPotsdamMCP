@@ -6,7 +6,7 @@ ProPotsdam MCP is a local, unofficial integration for the ProPotsdam/Easysquare 
 
 Please do not open a public issue that contains passwords, session cookies, CSRF tokens, portal traces, exported account data, screenshots with personal information, or live customer records.
 
-If this repository is still private, contact the maintainer through the existing private channel. If it is public, use GitHub private vulnerability reporting or a private security advisory when available. Include:
+Use [GitHub private vulnerability reporting](https://github.com/tintveen/proPotsdamMCP/security/advisories/new). Do not include sensitive details in a public issue. Include:
 
 - A short description of the issue.
 - The affected version or commit.
@@ -15,7 +15,7 @@ If this repository is still private, contact the maintainer through the existing
 
 ## Supported Versions
 
-This project is pre-1.0. Security fixes are handled on the current mainline version unless a release branch is explicitly documented.
+This project is pre-1.0. Security fixes are handled on the current `0.3.x` line and `main` unless a release branch is explicitly documented. Versions older than `0.3.0` are not supported.
 
 ## Local Sensitive Data
 

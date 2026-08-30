@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CliIo, CliPortalClient } from "../src/cli.js";
+import { PACKAGE_VERSION } from "../src/version.js";
 import type {
   AuthResult,
   CapabilityMap,
@@ -24,6 +25,20 @@ describe("CLI", () => {
       expect(harness.stdout()).toContain(`${binary} serve`);
       expect(harness.stdout()).toContain(`${binary} inbox <list|get>`);
       expect(harness.stdout()).toContain("posteingang -> inbox");
+    }
+  });
+
+  it("prints the package version for both global version flags", async () => {
+    const { runCli } = await import("../src/cli.js");
+
+    for (const binary of ["propotsdam-mcp", "propotsdam-cli"]) {
+      for (const flag of ["--version", "-v"]) {
+        const harness = createIo();
+        const exitCode = await runCli(["node", binary, flag], harness.io, minimalClient());
+
+        expect(exitCode).toBe(0);
+        expect(harness.stdout()).toBe(`${PACKAGE_VERSION}\n`);
+      }
     }
   });
 

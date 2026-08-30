@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/mcp.js";
 import type { PendingWriteServiceLike } from "../src/pending-write-service.js";
 import { PortalClient } from "../src/portal/portal-client.js";
+import { PACKAGE_VERSION } from "../src/version.js";
 import type { WasteServiceLike } from "../src/waste/types.js";
 
 describe("MCP server", () => {
@@ -52,7 +53,7 @@ describe("MCP server", () => {
       expect.arrayContaining(["proPotsdam auth status", "proPotsdam list portal records"])
     );
     expect(Object.values(tools).every((tool) => tool.title?.startsWith("proPotsdam "))).toBe(true);
-    expect(inspected.server._serverInfo.version).toBe("0.3.0");
+    expect(inspected.server._serverInfo.version).toBe(PACKAGE_VERSION);
     expect(tools.propotsdam_request_portal_action_commit).toBeUndefined();
     expect(tools.propotsdam_commit_portal_action).toBeUndefined();
 

@@ -5,7 +5,6 @@ import { stdin as input, stderr as errorOutput, stdout as output } from "node:pr
 import { createInterface as createHiddenInterface } from "node:readline";
 import type { Interface as HiddenInterface } from "node:readline";
 import { createInterface as createQuestionInterface } from "node:readline/promises";
-import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { PortalError } from "./errors.js";
 import { createDoctorReport } from "./diagnostics.js";
@@ -35,6 +34,7 @@ import type {
   StructuredPortalRecord
 } from "./types.js";
 import { redactSecrets } from "./utils/redact.js";
+import { PACKAGE_VERSION } from "./version.js";
 
 const TRUE_VALUES = new Set(["1", "true", "yes", "y", "on", "ja", "j"]);
 
@@ -106,6 +106,7 @@ interface ParsedArgs {
   flags: Map<string, string[]>;
   json: boolean;
   help: boolean;
+  version: boolean;
 }
 
 class CliUsageError extends Error {
@@ -123,6 +124,10 @@ export async function runCli(
 ): Promise<number> {
   const parsed = parseArgs(argv);
   try {
+    if (parsed.version) {
+      writeOutput(io, `${PACKAGE_VERSION}\n`);
+      return 0;
+    }
     if (parsed.help || parsed.positionals[0] === "help") {
       writeOutput(io, helpFor(parsed));
       return 0;
@@ -776,6 +781,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       addFlag(flags, "help", "true");
       continue;
     }
+    if (arg === "-v") {
+      addFlag(flags, "version", "true");
+      continue;
+    }
     if (arg.startsWith("--")) {
       const body = arg.slice(2);
       const equalsIndex = body.indexOf("=");
@@ -799,7 +808,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     positionals,
     flags,
     json: hasFlag(flags, "json"),
-    help: hasFlag(flags, "help")
+    help: hasFlag(flags, "help"),
+    version: hasFlag(flags, "version")
   };
 }
 
@@ -1054,6 +1064,9 @@ Aliases:
   aktionen    -> actions
 
 Global options:
+  -h, --help   Show command help.
+  -v, --version
+               Print the installed package version.
   --json       Print redacted machine-readable JSON.
   --search     Filter list results client-side.
   --limit      Limit displayed list results.
@@ -1141,8 +1154,4 @@ async function questionHidden(prompt: string): Promise<string> {
       resolve(answer);
     });
   });
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.exitCode = await runCli();
 }

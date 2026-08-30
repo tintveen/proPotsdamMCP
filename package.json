@@ -4,8 +4,8 @@
   "description": "Local MCP server for the ProPotsdam customer portal",
   "type": "module",
   "bin": {
-    "propotsdam-mcp": "dist/cli.js",
-    "propotsdam-cli": "dist/cli.js"
+    "propotsdam-mcp": "dist/bin.js",
+    "propotsdam-cli": "dist/bin.js"
   },
   "files": [
     "dist/",
@@ -22,15 +22,20 @@
     "url": "https://github.com/tintveen/proPotsdamMCP/issues"
   },
   "homepage": "https://github.com/tintveen/proPotsdamMCP#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/bin.js', 0o755)\"",
     "check": "tsc --noEmit -p tsconfig.json",
-    "auth:set": "node dist/cli.js auth set",
-    "discover": "node dist/cli.js discover",
-    "actions": "node dist/cli.js actions",
+    "auth:set": "node dist/bin.js auth set",
+    "discover": "node dist/bin.js discover",
+    "actions": "node dist/bin.js actions",
     "dev": "tsx src/index.ts",
     "prepack": "npm run build",
-    "release:check": "npm run check && npm test && npm run build && npm pack --dry-run",
+    "package:verify": "node scripts/verify-package.mjs",
+    "release:check": "npm run check && npm test && npm audit --audit-level=high && npm audit --omit=dev --audit-level=high && npm run package:verify",
     "test": "vitest run",
     "test:live": "PROPPOTSDAM_LIVE_TEST=1 vitest run tests/live-read-pass.test.ts",
     "test:watch": "vitest"
