@@ -1,6 +1,6 @@
 {
   "name": "propotsdam-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local MCP server for the ProPotsdam customer portal",
   "type": "module",
   "bin": {
@@ -47,7 +47,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=26"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

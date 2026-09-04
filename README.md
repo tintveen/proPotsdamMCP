@@ -10,25 +10,27 @@ It runs on your Mac, talks MCP over stdio, stores your portal password in the ma
 
 ## Install
 
-Requirements: macOS, Node.js 22 or 24, npm/npx, macOS Keychain, and a ProPotsdam/Easysquare account.
+Requirements: macOS, Node.js 26 or newer, npm/npx, macOS Keychain, and a ProPotsdam/Easysquare account.
+
+**Migration note:** `v0.4.0` requires Node.js 26. Node.js 22 and 24 users cannot upgrade; `v0.3.0` remains installable but is no longer supported.
 
 Check the published command before adding it to Codex:
 
 ```bash
-npx -y propotsdam-mcp@0.3.0 --version
+npx -y propotsdam-mcp@0.4.0 --version
 ```
 
 Add the reviewed version to Codex:
 
 ```bash
-codex mcp add proPotsdam -- npx -y propotsdam-mcp@0.3.0 serve
+codex mcp add proPotsdam -- npx -y propotsdam-mcp@0.4.0 serve
 ```
 
 If you previously installed the MCP server as `propotsdam`, re-add it under the display-correct name:
 
 ```bash
 codex mcp remove propotsdam
-codex mcp add proPotsdam -- npx -y propotsdam-mcp@0.3.0 serve
+codex mcp add proPotsdam -- npx -y propotsdam-mcp@0.4.0 serve
 ```
 
 Restart Codex afterward so the tool namespace refreshes.
@@ -36,7 +38,7 @@ Restart Codex afterward so the tool namespace refreshes.
 Store your portal credentials once:
 
 ```bash
-npx -y propotsdam-mcp@0.3.0 auth set
+npx -y propotsdam-mcp@0.4.0 auth set
 ```
 
 For the normal ProPotsdam portal, credential setup does not need a base URL. Local config, session cookies, traces, shared pending actions and their short-lived staged attachments or normalized report photos, and MCP-created exports live under:
@@ -55,22 +57,22 @@ The package publishes two commands that share the same local credentials and dat
 Both binaries accept the same commands. Running either one without arguments prints help; the MCP server is started only with `serve`. With `npx`, use the package name `propotsdam-mcp`. The `propotsdam-cli` alias is available after a global or project-local installation.
 
 ```bash
-npx -y propotsdam-mcp@0.3.0 auth status
-npx -y propotsdam-mcp@0.3.0 inbox list
-npx -y propotsdam-mcp@0.3.0 records list --domain repair_status
-npx -y propotsdam-mcp@0.3.0 records raw get REC-1 --json
-npx -y propotsdam-mcp@0.3.0 files export REC-1 --output-dir /tmp/propotsdam-exports
-npx -y propotsdam-mcp@0.3.0 actions list --kind form
-npx -y propotsdam-mcp@0.3.0 actions prepare DMG-NEW --value description="Heizung bleibt kalt"
-npx -y propotsdam-mcp@0.3.0 actions send cmdsend --attachment-file ./schaden.jpg --value msg_txt="Deckel defekt" --value TOPIC_IW_...="Abfallbehälter"
-npx -y propotsdam-mcp@0.3.0 actions send save_partner --value phone_ref="+491234567"
-npx -y propotsdam-mcp@0.3.0 writes list --domain repair_report
+npx -y propotsdam-mcp@0.4.0 auth status
+npx -y propotsdam-mcp@0.4.0 inbox list
+npx -y propotsdam-mcp@0.4.0 records list --domain repair_status
+npx -y propotsdam-mcp@0.4.0 records raw get REC-1 --json
+npx -y propotsdam-mcp@0.4.0 files export REC-1 --output-dir /tmp/propotsdam-exports
+npx -y propotsdam-mcp@0.4.0 actions list --kind form
+npx -y propotsdam-mcp@0.4.0 actions prepare DMG-NEW --value description="Heizung bleibt kalt"
+npx -y propotsdam-mcp@0.4.0 actions send cmdsend --attachment-file ./schaden.jpg --value msg_txt="Deckel defekt" --value TOPIC_IW_...="Abfallbehälter"
+npx -y propotsdam-mcp@0.4.0 actions send save_partner --value phone_ref="+491234567"
+npx -y propotsdam-mcp@0.4.0 writes list --domain repair_report
 ```
 
 For a global installation, upgrade, or removal:
 
 ```bash
-npm install --global propotsdam-mcp@0.3.0
+npm install --global propotsdam-mcp@0.4.0
 propotsdam-cli --version
 npm install --global propotsdam-mcp@latest
 npm uninstall --global propotsdam-mcp
@@ -80,7 +82,7 @@ To upgrade the Codex configuration deliberately, remove it and add the newly rev
 
 ```bash
 codex mcp remove proPotsdam
-codex mcp add proPotsdam -- npx -y propotsdam-mcp@0.3.0 serve
+codex mcp add proPotsdam -- npx -y propotsdam-mcp@0.4.0 serve
 ```
 
 Human output uses compact tables for lists and readable detail sections for single records. Add `--json` to get redacted machine-readable output using the underlying client result shape, for example `{ "items": [...], "source": "boxlist" }`.

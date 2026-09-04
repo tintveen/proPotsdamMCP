@@ -13,26 +13,26 @@ const baseConfig: PortalConfig = {
 };
 
 describe("doctor diagnostics", () => {
-  it("marks Node 22 and newer as supported", async () => {
+  it("marks Node 26.0.0 as supported", async () => {
     const report = await createDoctorReport({
       loadConfig: async () => ({ ...baseConfig }),
       credentialStore: missingCredentialStore(),
       client: unauthenticatedClient(),
       fetchImpl: reachableFetch(),
-      nodeVersion: "22.1.0"
+      nodeVersion: "26.0.0"
     });
 
-    expect(report.runtime.nodeVersion).toBe("22.1.0");
+    expect(report.runtime.nodeVersion).toBe("26.0.0");
     expect(report.runtime.nodeSupported).toBe(true);
   });
 
-  it("marks older Node versions as unsupported", async () => {
+  it("marks Node 25.x as unsupported", async () => {
     const report = await createDoctorReport({
       loadConfig: async () => ({ ...baseConfig }),
       credentialStore: missingCredentialStore(),
       client: unauthenticatedClient(),
       fetchImpl: reachableFetch(),
-      nodeVersion: "20.11.1"
+      nodeVersion: "25.11.1"
     });
 
     expect(report.runtime.nodeSupported).toBe(false);

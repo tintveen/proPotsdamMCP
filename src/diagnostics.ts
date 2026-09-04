@@ -227,7 +227,7 @@ function normalizeNodeVersion(version: string): string {
 
 function isNodeSupported(version: string): boolean {
   const major = Number.parseInt(normalizeNodeVersion(version).split(".")[0] ?? "", 10);
-  return Number.isFinite(major) && major >= 22;
+  return Number.isFinite(major) && major >= 26;
 }
 
 function commandName(argv: string[]): string | undefined {

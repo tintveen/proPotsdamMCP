@@ -7,13 +7,16 @@ Before any release tag is pushed, the `npm-release` environment must require `ti
 ## Prepare a Version
 
 1. Update `package.json`, `package-lock.json`, and the pinned version in `README.md` in one pull request. The CLI and MCP handshake both derive their version from `package.json`.
+   Current releases use Node.js `26.8.1` and npm `11.19.0`; keep local release evidence and both release jobs aligned to this exact toolchain.
 2. Run `npm ci`, `npm run release:check`, `git diff --check`, and a targeted secret scan.
 3. Inspect `npm pack --json` and confirm the archive contains no source, tests, credentials, traces, or personal data.
-4. Merge only after the macOS Node 22 and Node 24 checks pass and review findings are resolved.
+4. Merge only after the macOS Node 26 check and dependency audit pass and review findings are resolved.
 
 ## First Publication Only: `0.3.0`
 
 npm requires a package to exist before trusted publishing can be configured. The package owner therefore creates `0.3.0` once with interactive 2FA:
+
+The commands in this section are the historical `v0.3.0` bootstrap record and intentionally retain their original Node.js and npm pins.
 
 1. Confirm `npm view propotsdam-mcp@0.3.0` returns `E404` and `npm whoami` shows the intended owner.
 2. Check out the `0.3.0` merge commit with a clean working tree and run `npm ci && npm run release:check`.

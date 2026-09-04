@@ -1,7 +1,7 @@
 # Repository Instructions
 
 ## Environment
-- Use Node.js 22 or newer.
+- Use Node.js 26 or newer.
 - Install dependencies with `npm ci`.
 - Build output is generated in `dist/` and must not be committed.
 - For Codex Cloud live tasks, set:
@@ -14,7 +14,7 @@
 - Environment name: `proPotsdamMCP-live`
 - Repository: `tintveen/proPotsdamMCP`
 - Branch: `main`
-- Runtime: Node.js 22
+- Runtime: Node.js 26
 - Setup script:
   ```bash
   set -euxo pipefail
