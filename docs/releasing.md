@@ -8,6 +8,7 @@ Before any release tag is pushed, the `npm-release` environment must require `ti
 
 1. Update `package.json`, `package-lock.json`, and the pinned version in `README.md` in one pull request. The CLI and MCP handshake both derive their version from `package.json`.
    Current releases use Node.js `26.8.1` and npm `11.19.0`; keep local release evidence and both release jobs aligned to this exact toolchain.
+   Use the official Node.js binary, not a rebuilt distribution such as Homebrew: different bundled zlib implementations can produce different archive bytes even with the same Node.js version. For example, run `npm exec --yes --package=node@26.8.1 --package=npm@11.19.0 -- npm run release:check` to match the workflow's packer.
 2. Run `npm ci`, `npm run release:check`, `git diff --check`, and a targeted secret scan.
 3. Inspect `npm pack --json` and confirm the archive contains no source, tests, credentials, traces, or personal data.
 4. Merge only after the macOS Node 26 check and dependency audit pass and review findings are resolved.
