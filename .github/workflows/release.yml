@@ -124,7 +124,7 @@ jobs:
             fi
             echo "$package_spec already exists with identical integrity; skipping npm publish."
           elif grep -q "E404" "$RUNNER_TEMP/npm-view.err"; then
-            npm publish "release-artifacts/$ARCHIVE" --access public
+            npm publish "./release-artifacts/$ARCHIVE" --access public
           else
             sed -n '1,120p' "$RUNNER_TEMP/npm-view.err" >&2
             exit "$view_status"

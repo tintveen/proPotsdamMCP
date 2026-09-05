@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,9 +17,10 @@ const scratch = await mkdtemp(join(tmpdir(), "propotsdam-package-verify-"));
 
 try {
   const packDirectory = join(scratch, "pack");
+  const publishDirectory = join(scratch, "release-artifacts");
   const installDirectory = join(scratch, "install");
   const dataDirectory = join(scratch, "data");
-  await Promise.all([mkdir(packDirectory), mkdir(installDirectory), mkdir(dataDirectory)]);
+  await Promise.all([mkdir(packDirectory), mkdir(publishDirectory), mkdir(installDirectory), mkdir(dataDirectory)]);
 
   const packResult = await run("npm", ["pack", "--json", "--silent", "--pack-destination", packDirectory], {
     cwd: repositoryRoot
@@ -62,6 +63,17 @@ try {
   }
 
   const archivePath = join(packDirectory, record.filename);
+  await copyFile(archivePath, join(publishDirectory, record.filename));
+  // Exercise npm's local-file parsing without publishing or running lifecycle scripts.
+  const publishDryRun = await run(
+    "npm",
+    ["publish", `./release-artifacts/${record.filename}`, "--dry-run", "--ignore-scripts", "--access", "public", "--json"],
+    { cwd: scratch }
+  );
+  const dryRunRecord = JSON.parse(publishDryRun.stdout)[packageJson.name];
+  assert.equal(dryRunRecord?.version, expectedVersion, "publish dry-run must select the packed version");
+  assert.equal(dryRunRecord?.integrity, record.integrity, "publish dry-run must preserve archive integrity");
+
   await writeFile(
     join(installDirectory, "package.json"),
     `${JSON.stringify({ name: "propotsdam-package-smoke", private: true, type: "module" }, null, 2)}\n`
@@ -103,7 +115,7 @@ try {
   await verifyMcpHandshake(mcpBinary, installDirectory, dataDirectory);
 
   process.stdout.write(
-    `Verified ${record.filename}: ${record.files.length} files, ${record.integrity}, both binaries, native modules, and MCP handshake.\n`
+    `Verified ${record.filename}: ${record.files.length} files, ${record.integrity}, publish dry-run, both binaries, native modules, and MCP handshake.\n`
   );
 } finally {
   if (process.env.KEEP_PACKAGE_VERIFY_TEMP === "1") {

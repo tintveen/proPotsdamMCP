@@ -18,4 +18,11 @@ describe("package scripts", () => {
     expect(pkg.scripts["package:verify"]).toBe("node scripts/verify-package.mjs");
     expect(pkg.scripts["release:check"]).toContain("npm run package:verify");
   });
+
+  it("publishes an explicit local tarball path, not GitHub shorthand", async () => {
+    const workflow = await readFile(".github/workflows/release.yml", "utf8");
+    const publishCommands = workflow.match(/^\s+npm publish .+$/gm)?.map((line) => line.trim());
+
+    expect(publishCommands).toEqual(['npm publish "./release-artifacts/$ARCHIVE" --access public']);
+  });
 });
