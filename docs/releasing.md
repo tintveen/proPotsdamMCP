@@ -11,6 +11,7 @@ Before any release tag is pushed, the `npm-release` environment must require `ti
    Use the official Node.js binary, not a rebuilt distribution such as Homebrew: different bundled zlib implementations can produce different archive bytes even with the same Node.js version. For example, run `npm exec --yes --package=node@26.8.1 --package=npm@11.19.0 -- npm run release:check` to match the workflow's packer.
 2. Run `npm ci`, `npm run release:check`, `git diff --check`, and a targeted secret scan.
 3. Inspect `npm pack --json` and confirm the archive contains no source, tests, credentials, traces, or personal data.
+   `release:check` also dry-runs publication of the local tarball and checks its integrity without publishing. Always pass `./release-artifacts/<archive>.tgz` (or an absolute path) to `npm publish`; a bare `release-artifacts/<archive>.tgz` is interpreted as GitHub shorthand. A successful dry run does not prove npm OIDC authorization.
 4. Merge only after the macOS Node 26 check and dependency audit pass and review findings are resolved.
 
 ## First Publication Only: `0.3.0`
@@ -59,3 +60,5 @@ The first version is published interactively and therefore has no GitHub provena
 ## Recovery
 
 If npm publication succeeds but GitHub Release creation fails, rerun the same tag workflow. It resumes only when the existing npm integrity matches the rebuilt archive. Never change or overwrite a published version. An integrity mismatch is a stop condition that requires manual investigation.
+
+If a deterministic failure occurs before publication, fix it in a new commit and version, repeat the release gate, and obtain a new tag/publication approval. Never move, replace, or delete the failed release's protected tag.
