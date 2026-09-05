@@ -27,7 +27,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.18.0
+          node-version: 26.8.1
           package-manager-cache: false
 
       - name: Verify tag and main ancestry
@@ -69,15 +69,15 @@ jobs:
       - name: Set up Node.js and npm registry
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24.18.0
+          node-version: 26.8.1
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
       - name: Verify deterministic release toolchain
         run: |
           set -euo pipefail
-          [[ "$(node --version)" == "v24.18.0" ]]
-          [[ "$(npm --version)" == "11.16.0" ]]
+          [[ "$(node --version)" == "v26.8.1" ]]
+          [[ "$(npm --version)" == "11.19.0" ]]
 
       - name: Install dependencies
         run: npm ci

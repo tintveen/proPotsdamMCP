@@ -15,7 +15,7 @@ Use [GitHub private vulnerability reporting](https://github.com/tintveen/proPots
 
 ## Supported Versions
 
-This project is pre-1.0. Security fixes are handled on the current `0.3.x` line and `main` unless a release branch is explicitly documented. Versions older than `0.3.0` are not supported.
+This project is pre-1.0. Security fixes are handled only on the current `0.4.x` line and `main` unless a release branch is explicitly documented. Version `0.3.0` remains installable but is no longer supported.
 
 ## Local Sensitive Data
 

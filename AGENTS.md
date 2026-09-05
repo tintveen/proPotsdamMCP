@@ -1,10 +1,10 @@
 # Repository Instructions
 
 ## Environment
-- Use Node.js 22 or newer.
+- Use Node.js 26 or newer.
 - Install dependencies with `npm ci`.
 - Build output is generated in `dist/` and must not be committed.
-- For Codex Cloud live tasks, set:
+- The saved Codex Cloud environment has no portal credentials. Only for separately authorized live tasks, set:
   - `PROPPOTSDAM_USERNAME`
   - `PROPPOTSDAM_PASSWORD`
   - `PROPPOTSDAM_DATA_DIR=/tmp/propotsdam-mcp-codex`
@@ -14,10 +14,22 @@
 - Environment name: `proPotsdamMCP-live`
 - Repository: `tintveen/proPotsdamMCP`
 - Branch: `main`
-- Runtime: Node.js 22
+- Runtime: Node.js `26.8.1` with npm `11.19.0`, installed by the setup script.
+- Container image: `universal`; the UI's preinstalled Node 22 is only the bootstrap runtime. Both scripts select Node 26 explicitly and persist it as the default for new shells.
 - Setup script:
   ```bash
-  set -euxo pipefail
+  set +x
+  set -eo pipefail
+  source "${NVM_DIR:-/root/.nvm}/nvm.sh"
+  nvm install 26.8.1
+  nvm alias default 26.8.1
+  nvm use 26.8.1
+  if [ "$(npm --version)" != "11.19.0" ]; then
+    npm install --global npm@11.19.0
+  fi
+  set -u
+  test "$(node --version)" = "v26.8.1"
+  test "$(npm --version)" = "11.19.0"
   sudo apt-get update
   sudo apt-get install -y libsecret-1-dev
   npm ci
@@ -25,11 +37,19 @@
   ```
 - Maintenance script:
   ```bash
-  set -euxo pipefail
+  set +x
+  set -eo pipefail
+  source "${NVM_DIR:-/root/.nvm}/nvm.sh"
+  nvm alias default 26.8.1
+  nvm use 26.8.1
+  set -u
+  test "$(node --version)" = "v26.8.1"
+  test "$(npm --version)" = "11.19.0"
   npm ci
   npm run build
   ```
-- Agent internet access: on, restricted to these exact hosts:
+- Agent internet access: off for credentials-free development and release validation. Setup and maintenance retain network access to install dependencies.
+- Live access requires separate authorization and a mechanism that enforces these exact host/method restrictions; do not approximate them with a broader global method allowance:
   - `propotsdam-kundenportal.easysquare.com` — `GET`, `HEAD`, `OPTIONS`, `POST`
   - `www.swp-potsdam.de` — `GET`, `POST`
   - `mitgestalten.potsdam.de` — `GET`, `POST`
