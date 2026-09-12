@@ -29,6 +29,6 @@ export function redactSecrets(value: unknown): unknown {
   return value;
 }
 
-function isSecretKey(key: string): boolean {
+export function isSecretKey(key: string): boolean {
   return /password|cookie|csrf|token|sap-ffield|nonce|form[-_]?definition|session[-_]?(?:id|key)|mwf[-_]?(?:key|token)/i.test(key);
 }

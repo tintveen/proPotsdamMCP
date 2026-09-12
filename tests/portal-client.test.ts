@@ -2,6 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { XMLValidator } from "fast-xml-parser";
 import type { CredentialStore } from "../src/credentials.js";
 import type { PortalCommitBatchResult, PortalCommitResult } from "../src/types.js";
 
@@ -17,6 +18,103 @@ describe("PortalClient HTTP flow", () => {
     delete process.env.PROPPOTSDAM_PASSWORD;
     delete process.env.PROPPOTSDAM_BASE_URL;
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it("refreshes records and actions after logout and login under a different account", async () => {
+    const { client, setPortalUserId, setProfilePhone } = await createMockClient({
+      loggedServicesBody: servicesWithProfileDetail(),
+      accountSpecificRecords: true
+    });
+    expect((await client.listPortalRecords()).items.find((record) => record.id === "REC-1")?.title).toBe("MAX");
+    await client.listPortalActions();
+    await client.logout();
+    setPortalUserId("OTHER");
+    setProfilePhone("+15550109999");
+    await client.login();
+    expect((await client.listPortalRecords()).items.find((record) => record.id === "REC-1")?.title).toBe("OTHER");
+    const actions = await client.listPortalActions();
+    expect(actions.items.find((action) => action.id === "save_partner")?.fields.find((field) => field.name === "phone_ref")?.value)
+      .toBe("+15550109999");
+  });
+
+  it("revalidates the remote account before reusing either cache", async () => {
+    const { client, setPortalUserId, setProfilePhone } = await createMockClient({
+      loggedServicesBody: servicesWithProfileDetail(),
+      accountSpecificRecords: true
+    });
+    await client.listPortalRecords();
+    await client.listPortalActionsForDefaults();
+    setPortalUserId("OTHER");
+    setProfilePhone("+15550109999");
+    expect((await client.listPortalRecords()).items.find((record) => record.id === "REC-1")?.title).toBe("OTHER");
+    const actions = await client.listPortalActionsForDefaults();
+    expect(actions.items.find((action) => action.id === "save_partner")?.fields.find((field) => field.name === "phone_ref")?.value)
+      .toBe("+15550109999");
+  });
+
+  it("does not populate a new account's cache with an older in-flight response", async () => {
+    let releaseResponse!: () => void;
+    let markRequested!: () => void;
+    const responseReady = new Promise<void>((resolve) => { markRequested = resolve; });
+    const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+    let held = false;
+    const { client, setPortalUserId } = await createMockClient({
+      loggedServicesBody: servicesWithGenericSection(),
+      accountSpecificRecords: true,
+      beforeTenantBoxlist: async () => {
+        if (!held) {
+          held = true;
+          markRequested();
+          await responseGate;
+        }
+      }
+    });
+    const oldRead = client.listPortalRecords();
+    await responseReady;
+    setPortalUserId("OTHER");
+    await client.status();
+    releaseResponse();
+    expect((await oldRead).items.find((record) => record.id === "REC-1")?.title).toBe("MAX");
+    expect((await client.listPortalRecords()).items.find((record) => record.id === "REC-1")?.title).toBe("OTHER");
+  });
+
+  it("does not expose hidden detail values through either MCP result representation", async () => {
+    const { client } = await createMockClient({
+      loggedServicesBody: servicesWithGenericSection(),
+      tenantDetailBody: '<detail><text>Visible detail</text><hiddenfield><id>csrfToken</id><value>SECRET_MCP_VALUE</value></hiddenfield></detail>'
+    });
+    const { createServer } = await import("../src/mcp.js");
+    const server = createServer(client);
+    try {
+      const tools = (server as unknown as {
+        _registeredTools: Record<string, { handler: (input: { id: string }, extra: object) => Promise<unknown> }>;
+      })._registeredTools;
+      const result = await tools.propotsdam_get_portal_record!.handler({ id: "REC-1" }, {});
+      expect(JSON.stringify(result)).toContain("Visible detail");
+      expect(JSON.stringify(result)).not.toContain("SECRET_MCP_VALUE");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("submits the exact reviewed text when it contains replacement patterns and XML metacharacters", async () => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairDetailForm: true
+    });
+    const description = "Repair costs $100; literal $& $1 $$ $' and $" + String.fromCharCode(96) + " <>&";
+    const staged = await client.stagePortalAction("cmdsend", {
+      msg_txt: description,
+      TOPIC_IB_DOOR_1: "TUEROEFFNER"
+    });
+    expect(staged.ok).toBe(true);
+    expect(staged.diff.find((entry) => entry.name === "msg_txt")?.proposedValue).toBe(description);
+    await expect(commitOne(client, staged.pendingWriteHandle!)).resolves.toMatchObject({ outcome: "succeeded" });
+    const xml = String(requests.find((request) => request.method === "POST" && request.url.includes("name=save"))?.body);
+    expect(XMLValidator.validate(xml)).toBe(true);
+    const { extractPortalActions } = await import("../src/portal/parsers.js");
+    const actions = extractPortalActions(xml, "application/xml", { serviceUrl: "/repair-service", xuclass: "ESQ_TENA_DMG" }, { source: "detail" });
+    expect(actions[0]?.fields.find((field) => field.name === "msg_txt")?.value).toBe(description);
   });
 
   it("logs in with Keychain credentials and saves a validated session", async () => {
@@ -1075,6 +1173,9 @@ async function createMockClient(options: {
   failRepairUpload?: boolean;
   failRepairCommit?: boolean;
   failRepairCommitOnce?: boolean;
+  accountSpecificRecords?: boolean;
+  tenantDetailBody?: string;
+  beforeTenantBoxlist?: () => Promise<void>;
 } = {}) {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "propotsdam-mcp-"));
   tempDirs.push(tempDir);
@@ -1176,11 +1277,13 @@ async function createMockClient(options: {
     }
 
     if (requestUrl.includes("/tenant-service") && requestUrl.includes("name=boxlist")) {
+      const title = options.accountSpecificRecords ? activeUserId : "Mietvertrag.pdf";
+      await options.beforeTenantBoxlist?.();
       return new Response(`
         <boxlist>
           <box>
             <id>REC-1</id>
-            <title>Mietvertrag.pdf</title>
+            <title>${title}</title>
             <resourceId>RES-1</resourceId>
             <resourceOrigin>ARCHIVE</resourceOrigin>
             <mimeType>application/pdf</mimeType>
@@ -1198,7 +1301,7 @@ async function createMockClient(options: {
     }
 
     if (requestUrl.includes("/tenant-service") && requestUrl.includes("id=REC-1") && !requestUrl.includes("resourceOrigin")) {
-      return new Response("<detail><text>Detail for REC-1</text></detail>", {
+      return new Response(options.tenantDetailBody ?? "<detail><text>Detail for REC-1</text></detail>", {
         status: 200,
         headers: { "content-type": "application/xml" }
       });

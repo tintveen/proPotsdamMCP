@@ -39,12 +39,12 @@ export class CookieSession {
 
   async get(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse> {
     this.assertReadOnlyGet(pathOrUrl);
-    return this.request(pathOrUrl, { ...init, method: "GET" });
+    return this.request(pathOrUrl, { ...init, method: "GET" }, true);
   }
 
   async getBinary(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse<Uint8Array>> {
     this.assertReadOnlyGet(pathOrUrl);
-    const response = await this.requestRaw(pathOrUrl, { ...init, method: "GET" });
+    const response = await this.requestRaw(pathOrUrl, { ...init, method: "GET" }, true);
     await this.storeCookies(response, this.buildUrl(pathOrUrl));
     this.captureCsrf(response);
     return {
@@ -77,8 +77,8 @@ export class CookieSession {
     return this.request(pathOrUrl, { ...init, body, method: "POST" });
   }
 
-  private async request(pathOrUrl: string, init: RequestInit = {}): Promise<HttpResponse> {
-    const response = await this.requestRaw(pathOrUrl, init);
+  private async request(pathOrUrl: string, init: RequestInit = {}, readOnly = false): Promise<HttpResponse> {
+    const response = await this.requestRaw(pathOrUrl, init, readOnly);
     await this.storeCookies(response, this.buildUrl(pathOrUrl));
     this.captureCsrf(response);
     return {
@@ -92,14 +92,22 @@ export class CookieSession {
   }
 
   buildUrl(pathOrUrl: string): string {
-    if (/^https?:\/\//i.test(pathOrUrl)) {
-      return pathOrUrl;
-    }
+    let baseUrl: URL;
     try {
-      return new URL(pathOrUrl, this.config.baseUrl).toString();
+      baseUrl = new URL(this.config.baseUrl);
     } catch {
       throw new Error(`Invalid config baseUrl '${this.config.baseUrl}'. Run \`npm run auth:set\` to repair it.`);
     }
+    const url = new URL(pathOrUrl, baseUrl);
+    if (
+      !["https:", "http:"].includes(url.protocol)
+      || url.origin !== baseUrl.origin
+      || url.username
+      || url.password
+    ) {
+      throw new Error("Portal requests must stay on the configured origin and must not contain URL credentials.");
+    }
+    return url.toString();
   }
 
   private assertReadOnlyGet(pathOrUrl: string): void {
@@ -120,25 +128,54 @@ export class CookieSession {
     }
   }
 
-  private async requestRaw(pathOrUrl: string, init: RequestInit): Promise<Response> {
-    const url = this.buildUrl(pathOrUrl);
-    const headers = new Headers(init.headers);
-    const cookie = await this.jar.getCookieString(url);
-    if (cookie) {
-      headers.set("cookie", cookie);
-    }
-    if (this.csrfToken && !headers.has("X-CSRF-Token")) {
-      headers.set("X-CSRF-Token", this.csrfToken);
-    }
-    headers.set("oppc-id", this.config.clientId);
-    headers.set("UTC", String(Date.now()));
-    headers.set("user-agent", "propotsdam-mcp/0.2");
+  private async requestRaw(pathOrUrl: string, init: RequestInit, readOnly = false): Promise<Response> {
+    let url = this.buildUrl(pathOrUrl);
+    for (let redirects = 0; ; redirects += 1) {
+      const headers = new Headers(init.headers);
+      const cookie = await this.jar.getCookieString(url);
+      if (cookie) {
+        headers.set("cookie", cookie);
+      }
+      if (this.csrfToken && !headers.has("X-CSRF-Token")) {
+        headers.set("X-CSRF-Token", this.csrfToken);
+      }
+      headers.set("oppc-id", this.config.clientId);
+      headers.set("UTC", String(Date.now()));
+      headers.set("user-agent", "propotsdam-mcp/0.2");
 
-    return this.fetchImpl(url, {
-      ...init,
-      headers,
-      redirect: init.redirect ?? "follow"
-    });
+      const response = await this.fetchImpl(url, { ...init, headers, redirect: "manual" });
+      try {
+        if (response.url) {
+          this.buildUrl(response.url);
+        }
+        if (response.redirected || response.type === "opaqueredirect") {
+          throw new Error("Portal transport followed an unvalidated redirect.");
+        }
+        if (response.status < 300 || response.status >= 400) {
+          return response;
+        }
+        const location = response.headers.get("location");
+        if (
+          !readOnly
+          || init.redirect === "manual"
+          || init.redirect === "error"
+          || ![301, 302, 303, 307, 308].includes(response.status)
+          || !location
+          || redirects >= 5
+        ) {
+          throw new Error("Portal redirect refused; state-changing requests cannot be replayed.");
+        }
+        const nextUrl = this.buildUrl(new URL(location, url).toString());
+        this.assertReadOnlyGet(nextUrl);
+        await this.storeCookies(response, url);
+        this.captureCsrf(response);
+        url = nextUrl;
+      } catch (error) {
+        await response.body?.cancel().catch(() => undefined);
+        throw error;
+      }
+      await response.body?.cancel();
+    }
   }
 
   private async storeCookies(response: Response, requestUrl: string): Promise<void> {

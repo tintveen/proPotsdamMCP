@@ -232,6 +232,7 @@ export class PortalClient {
   private static readonly pendingWriteTtlMs = 10 * 60 * 1000;
   private readonly listCache = new Map<PortalSection, ListResult<InboxItem | DocumentItem | PortalRecordItem>>();
   private actionCache?: ListResult<PortalAction>;
+  private cacheIdentity?: string;
 
   constructor(
     private readonly credentialStore: CredentialStore = new EnvironmentCredentialStore(),
@@ -245,6 +246,7 @@ export class PortalClient {
   }
 
   async login(): Promise<AuthResult> {
+    this.clearReadCaches();
     const config = await loadConfig();
     if (!config.username) {
       return {
@@ -316,6 +318,7 @@ export class PortalClient {
   }
 
   async logout(): Promise<{ ok: true }> {
+    this.clearReadCaches();
     const config = await loadConfig();
     const session = new CookieSession(config, await loadSession(), this.fetchImpl);
     await session.get(`${API5_SERVICES_PATH}/logoff`).catch(() => undefined);
@@ -328,6 +331,8 @@ export class PortalClient {
   }
 
   async getInboxItem(id: string): Promise<InboxItem> {
+    const config = await loadConfig();
+    const session = await this.authenticatedSession(config);
     const cachedInbox = this.listCache.get("inbox") as ListResult<InboxItem> | undefined;
     const { items } = cachedInbox ?? await this.listInbox();
     const match = items.find((item) => item.id === id || item.title === id);
@@ -335,8 +340,6 @@ export class PortalClient {
       throw new PortalError(`Inbox item '${id}' was not found.`, "NOT_FOUND", 404);
     }
 
-    const config = await loadConfig();
-    const session = await this.authenticatedSession(config);
     const url = this.buildActionUrl(config, match.serviceUrl ?? match.detailUrl, match.id, "get");
     if (!url) {
       return match;
@@ -354,6 +357,9 @@ export class PortalClient {
   }
 
   async listPortalRecords(filter: { serviceId?: string; xuclass?: string } = {}): Promise<ListResult<PortalRecordItem>> {
+    if (this.listCache.has("generic")) {
+      await this.authenticatedSession(await loadConfig());
+    }
     const cachedRecords = this.listCache.get("generic") as ListResult<PortalRecordItem> | undefined;
     const result = cachedRecords ?? await this.listGenericRecords();
     const items = result.items.filter((item) => {
@@ -372,6 +378,8 @@ export class PortalClient {
   }
 
   async getPortalRecord(id: string): Promise<PortalRecordItem> {
+    const config = await loadConfig();
+    const session = await this.authenticatedSession(config);
     const cachedRecords = this.listCache.get("generic") as ListResult<PortalRecordItem> | undefined;
     const { items } = cachedRecords ?? await this.listPortalRecords();
     const match = items.find((item) => item.id === id || item.title === id);
@@ -379,8 +387,6 @@ export class PortalClient {
       throw new PortalError(`Portal record '${id}' was not found.`, "NOT_FOUND", 404);
     }
 
-    const config = await loadConfig();
-    const session = await this.authenticatedSession(config);
     const url = this.buildActionUrl(config, match.serviceUrl ?? match.detailUrl, match.id, "get");
     if (!url) {
       return match;
@@ -489,6 +495,7 @@ export class PortalClient {
     const session = await this.authenticatedSession(config);
     const status = await this.validateSession(config, session);
     const servicesResponse = await this.fetchServices(config, session);
+    const cacheIdentity = portalReadCacheIdentity(config, parseSessionStatus(servicesResponse.body, servicesResponse.contentType));
     const services = extractServices(servicesResponse.body, servicesResponse.contentType);
     const serviceSummaries: PortalActionMap["services"] = [];
     const actions: PortalAction[] = [];
@@ -597,11 +604,16 @@ export class PortalClient {
       await writeFile(artifactPath, `${JSON.stringify(redactedReport, null, 2)}\n`, "utf8");
     }
     await saveSession(session.serialize());
-    this.actionCache = { items: redactedReport.actions, source: "boxlist" };
+    if (cacheIdentity && cacheIdentity === this.cacheIdentity) {
+      this.actionCache = { items: redactedReport.actions, source: "boxlist" };
+    }
     return redactedReport;
   }
 
   async listPortalActionsForDefaults(): Promise<ListResult<PortalAction>> {
+    if (this.actionCache) {
+      await this.authenticatedSession(await loadConfig());
+    }
     if (this.actionCache) {
       return this.actionCache;
     }
@@ -616,6 +628,9 @@ export class PortalClient {
     source?: PortalAction["source"];
     recordId?: string;
   } = {}): Promise<ListResult<PortalAction>> {
+    if (this.actionCache) {
+      await this.authenticatedSession(await loadConfig());
+    }
     const cached = this.actionCache ?? await this.listAllPortalActions();
     const items = cached.items.filter((action) => {
       if (filter.serviceId && action.serviceId !== filter.serviceId) {
@@ -1274,6 +1289,7 @@ export class PortalClient {
       };
     } finally {
       closePortalWritePermit(permit);
+      this.clearReadCaches();
       await saveSession(session.serialize()).catch(() => undefined);
       await deleteClaimedPendingWrite(pendingWriteHandle).catch(() => undefined);
     }
@@ -1374,6 +1390,7 @@ export class PortalClient {
     const config = await loadConfig();
     const session = await this.authenticatedSession(config);
     const servicesResponse = await this.fetchServices(config, session);
+    const cacheIdentity = portalReadCacheIdentity(config, parseSessionStatus(servicesResponse.body, servicesResponse.contentType));
     const services = extractServices(servicesResponse.body, servicesResponse.contentType);
     const sectionServices = findSectionServices(services, section);
     const collected: (InboxItem | DocumentItem)[] = [];
@@ -1393,7 +1410,9 @@ export class PortalClient {
     if (collected.length > 0) {
       await saveSession(session.serialize());
       const result = { items: dedupeItems(collected), source: "boxlist" as const };
-      this.listCache.set(section, result);
+      if (cacheIdentity && cacheIdentity === this.cacheIdentity) {
+        this.listCache.set(section, result);
+      }
       return result;
     }
 
@@ -1402,7 +1421,9 @@ export class PortalClient {
       : extractDocumentItems(servicesResponse.body, servicesResponse.contentType);
     await saveSession(session.serialize());
     const result = { items: fallbackItems, source: "services" as const };
-    this.listCache.set(section, result);
+    if (cacheIdentity && cacheIdentity === this.cacheIdentity) {
+      this.listCache.set(section, result);
+    }
     return result;
   }
 
@@ -1410,6 +1431,7 @@ export class PortalClient {
     const config = await loadConfig();
     const session = await this.authenticatedSession(config);
     const servicesResponse = await this.fetchServices(config, session);
+    const cacheIdentity = portalReadCacheIdentity(config, parseSessionStatus(servicesResponse.body, servicesResponse.contentType));
     const services = extractServices(servicesResponse.body, servicesResponse.contentType);
     const genericServices = services.filter((service) => {
       const section = classifyServiceCapability(service).section;
@@ -1432,14 +1454,15 @@ export class PortalClient {
 
     await saveSession(session.serialize());
     const result = { items: dedupeItems(collected), source: "boxlist" as const };
-    this.listCache.set("generic", result);
+    if (cacheIdentity && cacheIdentity === this.cacheIdentity) {
+      this.listCache.set("generic", result);
+    }
     return result;
   }
 
   private async listAllPortalActions(): Promise<ListResult<PortalAction>> {
     const report = await this.discoverWriteActions();
     const result = { items: report.actions, source: "boxlist" as const };
-    this.actionCache = result;
     return result;
   }
 
@@ -1623,10 +1646,21 @@ export class PortalClient {
 
   private async validateSession(config: PortalConfig, session: CookieSession): Promise<AuthResult> {
     const response = await this.fetchServices(config, session).catch(() => null);
-    if (!response?.ok) {
-      return { state: "unauthenticated", authenticated: false };
+    const status: AuthResult = response?.ok
+      ? parseSessionStatus(response.body, response.contentType)
+      : { state: "unauthenticated", authenticated: false };
+    const identity = portalReadCacheIdentity(config, status);
+    if (!identity || identity !== this.cacheIdentity) {
+      this.clearReadCaches();
+      this.cacheIdentity = identity;
     }
-    return parseSessionStatus(response.body, response.contentType);
+    return status;
+  }
+
+  private clearReadCaches(): void {
+    this.listCache.clear();
+    this.actionCache = undefined;
+    this.cacheIdentity = undefined;
   }
 
   private async fetchServices(config: PortalConfig, session: CookieSession) {
@@ -1910,6 +1944,12 @@ function actionContractFingerprint(action: PortalAction): string {
 function portalAccountBinding(config: PortalConfig, status: AuthResult): string | undefined {
   const accountId = status.userId ?? config.username;
   return accountId?.trim().toUpperCase() || undefined;
+}
+
+function portalReadCacheIdentity(config: PortalConfig, status: AuthResult): string | undefined {
+  return status.authenticated && status.userId?.trim()
+    ? JSON.stringify([config.baseUrl, config.username, status.userId.trim().toUpperCase()])
+    : undefined;
 }
 
 function notSentCommitResult(
@@ -2293,7 +2333,9 @@ function replaceXmlFieldValue(xml: string, field: PortalActionField, value: stri
   for (const selector of selectors) {
     const textPattern = new RegExp(`(<(?:textfield|numberfield|datefield|textarea)\\b(?=[^>]*(?:id|refname|name)="${escapeRegExp(selector)}")[^>]*>)([\\s\\S]*?)(<\\/(?:textfield|numberfield|datefield|textarea)>)`);
     if (textPattern.test(xml)) {
-      return xml.replace(textPattern, `$1${escapeXmlText(value)}$3`);
+      return xml.replace(textPattern, (_match, opening: string, _current: string, closing: string) =>
+        `${opening}${escapeXmlText(value)}${closing}`
+      );
     }
     const choicePattern = new RegExp(`(<choicefield\\b(?=[^>]*(?:id|refname|name)="${escapeRegExp(selector)}")[^>]*>)([\\s\\S]*?)(<\\/choicefield>)`);
     const choiceMatch = choicePattern.exec(xml);
@@ -2305,7 +2347,9 @@ function replaceXmlFieldValue(xml: string, field: PortalActionField, value: stri
       if (nextChoices === choices.replace(/\sselected="true"/g, "")) {
         continue;
       }
-      return xml.replace(choicePattern, `$1${nextChoices}$3`);
+      return xml.replace(choicePattern, (_match, opening: string, _current: string, closing: string) =>
+        `${opening}${nextChoices}${closing}`
+      );
     }
   }
   return xml;
