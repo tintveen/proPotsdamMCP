@@ -234,8 +234,11 @@ export class PotsdamWasteClient {
     const apiErrorCode = isRecord(parsedBody) && typeof parsedBody.apiErrorCode === "string"
       ? parsedBody.apiErrorCode
       : undefined;
-    if (apiErrorCode) {
+    if (apiErrorCode === "flaw-reporter-error-001" || apiErrorCode === "flaw-reporter-error-002") {
       throw mapCreateError(response.status, parsedBody);
+    }
+    if (apiErrorCode) {
+      throw new PotsdamWasteError(POTSDAM_UNCERTAIN_MESSAGE, "AMBIGUOUS_WRITE", response.status);
     }
     if (!response.ok) {
       if (response.status >= 500) {

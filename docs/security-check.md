@@ -1,8 +1,8 @@
 # Pre-Publication Security Check
 
-Review date: 2026-08-30
+Review date: 2026-09-12
 
-This public repository was reviewed for its first npm release. The release gate covers the exact package archive and an installed-package MCP handshake without using portal credentials or contacting a live portal.
+The 0.4.2 audit fixes use synthetic HTTP fixtures and local loopback servers. The release gate covers the exact package archive and an installed-package MCP handshake without using portal credentials or contacting a live portal.
 
 ## Checks Performed
 
@@ -14,6 +14,18 @@ This public repository was reviewed for its first npm release. The release gate 
 - Verified dependency status with `npm audit` and `npm audit --omit=dev`.
 - Verified TypeScript and test health with `npm run check` and `npm test`.
 - Checked packaging with `npm run package:verify`, including the archive allowlist, a clean tarball installation, both command shims, native dependency loading, and an MCP initialize/list-tools handshake.
+
+## Audit Regression Coverage
+
+The audit regression suite covers:
+
+- Read redirects to mutating actions and write redirects that would otherwise replay a POST or GET.
+- Off-origin requests, including relative authority URLs, scheme/port changes, and URL credentials.
+- Hidden XML/JSON form fields and malformed structured responses reaching MCP output.
+- Dollar replacement sequences and XML metacharacters surviving review and serialization unchanged.
+- Account changes during cached reads, including older requests finishing after an account change.
+- Explicit negative authentication markers and unrelated public service fields.
+- Unknown Potsdam API errors retaining an uncertain outcome, the no-retry warning, and single-use consumption.
 
 ## Sensitive Local Paths
 

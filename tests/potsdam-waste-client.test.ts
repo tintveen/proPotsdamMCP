@@ -227,6 +227,50 @@ describe("PotsdamWasteClient", () => {
     });
   });
 
+  it.each([200, 400, 500])("keeps an unknown API error at HTTP %i uncertain through the pending-action executor", async (status) => {
+    const directory = await temporaryDirectory();
+    const inputPath = path.join(directory, "source.jpg");
+    await sharp({ create: { width: 32, height: 32, channels: 3, background: "orange" } }).jpeg().toFile(inputPath);
+    const previousDataDir = process.env.PROPPOTSDAM_DATA_DIR;
+    process.env.PROPPOTSDAM_DATA_DIR = path.join(directory, "data");
+    vi.resetModules();
+    try {
+      const mock = await createMockFetch({ createStatus: status, createBody: { apiErrorCode: "unexpected-server-error" } });
+      const { PotsdamWasteClient: CurrentPotsdamClient } = await import("../src/potsdam/client.js");
+      const { WasteService } = await import("../src/waste/waste-service.js");
+      const { PendingWriteService } = await import("../src/pending-write-service.js");
+      const portal = {
+        status: async () => ({ state: "unauthenticated" as const, authenticated: false }),
+        listStructuredPortalRecords: async () => ({ items: [], source: "boxlist" as const }),
+        listPortalActions: async () => ({ items: [], source: "boxlist" as const })
+      };
+      const waste = new WasteService(portal, { potsdamClient: new CurrentPotsdamClient(mock.fetchImpl) });
+      const staged = await waste.stageAbandonedWasteReport({
+        location: { latitude: 52.3906, longitude: 13.0592 },
+        description: "Synthetic audit report",
+        contact: { email: "fixture@example.test" },
+        photoPaths: [inputPath],
+        privacyConsent: true
+      });
+      expect(staged.ok).toBe(true);
+      const pending = new PendingWriteService({
+        commitPendingWrites: async () => { throw new Error("Unexpected portal executor"); }
+      }, waste);
+      const committed = await pending.commitPendingWrites([staged.pendingWriteHandle!]);
+      expect(committed.results[0]).toMatchObject({
+        outcome: "outcomeUncertain",
+        status,
+        summary: expect.stringContaining("Do not retry automatically")
+      });
+      expect((await pending.commitPendingWrites([staged.pendingWriteHandle!])).results[0]?.outcome).toBe("notSent");
+      expect(mock.requests.filter((request) => request.url.toString() === POTSDAM_WASTE_CREATE_URL)).toHaveLength(1);
+    } finally {
+      if (previousDataDir === undefined) delete process.env.PROPPOTSDAM_DATA_DIR;
+      else process.env.PROPPOTSDAM_DATA_DIR = previousDataDir;
+      vi.resetModules();
+    }
+  });
+
   it("marks an unrecognized successful create response as an uncertain outcome", async () => {
     const directory = await temporaryDirectory();
     const inputPath = path.join(directory, "source.jpg");

@@ -1,6 +1,6 @@
 {
   "name": "propotsdam-mcp",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Local MCP server for the ProPotsdam customer portal",
   "type": "module",
   "bin": {
@@ -54,7 +54,7 @@
     "cheerio": "^1.2.0",
     "fast-xml-parser": "^5.2.5",
     "keytar": "^7.9.0",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
     "tough-cookie": "^6.0.0",
     "zod": "^4.3.6"
   },
@@ -62,6 +62,6 @@
     "@types/node": "^26.4.0",
     "tsx": "^4.20.5",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.11"
   }
 }

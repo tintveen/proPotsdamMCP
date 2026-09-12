@@ -9,6 +9,7 @@ import {
   extractPortalRecordItems,
   extractServices,
   findSectionServices,
+  normalizeDetailText,
   parseSessionStatus,
   toStructuredPortalRecord
 } from "../src/portal/parsers.js";
@@ -19,6 +20,56 @@ function fixture(name: string): string {
 }
 
 describe("portal parsers", () => {
+  it.each(["false", "FALSE", "False", "0", "", "N", "no", "unknown"])("respects the explicit negative or unknown login marker '%s'", (logged) => {
+    expect(parseSessionStatus(`<SERVICE><HEAD><LOGGED>${logged}</LOGGED><USER_ID>old-user</USER_ID><USER_FULLNAME>Old User</USER_FULLNAME></HEAD></SERVICE>`))
+      .toMatchObject({ authenticated: false, state: "unauthenticated", userId: undefined, userFullName: undefined });
+  });
+
+  it.each(["X", "true", "1", "Y", "yes"])("accepts a positive login marker '%s' in the session header", (logged) => {
+    expect(parseSessionStatus(JSON.stringify({ SERVICE: { HEAD: { LOGGED: logged, USER_ID: "fixture-user" } } }), "application/json"))
+      .toMatchObject({ authenticated: true, userId: "fixture-user" });
+  });
+
+  it("does not infer authentication or identity from service and form fields", () => {
+    for (const body of [
+      '<SERVICE><HEAD><LOGGED>N</LOGGED></HEAD><NODE><name>Public login</name><USER_ID>public</USER_ID></NODE></SERVICE>',
+      '<SERVICE><NODE><name>Public login</name><user>public</user><LOGGED>X</LOGGED></NODE></SERVICE>',
+      '<SERVICE><HEAD><name>Public login</name></HEAD></SERVICE>'
+    ]) {
+      expect(parseSessionStatus(body)).toMatchObject({ authenticated: false, userId: undefined, userFullName: undefined });
+    }
+    expect(parseSessionStatus('<SERVICE><HEAD><LOGGED>X</LOGGED><USER_ID>real-user</USER_ID></HEAD><NODE><user>unrelated-user</user><name>Public service</name></NODE></SERVICE>'))
+      .toMatchObject({ authenticated: true, userId: "real-user", userFullName: undefined });
+  });
+
+  it("removes secret keys and hidden or sensitive form values before flattening XML", () => {
+    const detail = normalizeDetailText(`<detail>
+      <text>Visible message</text><csrfToken>SECRET_DIRECT</csrfToken>
+      <password>SECRET_PASSWORD</password>
+      <hiddenfield id="record"><value>SECRET_HIDDEN_TAG</value></hiddenfield>
+      <hiddenfield>SECRET_HIDDEN_SCALAR</hiddenfield>
+      <input type="password" value="SECRET_PASSWORD_INPUT"/>
+      <textfield id="ordinary" visibility="hidden">SECRET_HIDDEN_ATTRIBUTE</textfield>
+      <field><hidden>true</hidden><value>SECRET_HIDDEN_CHILD</value></field>
+      <field><name>csrfToken</name><value>SECRET_NAMED_FIELD</value></field>
+      <textfield refname="sap-ffield_b64">SECRET_ATTRIBUTE_NAME</textfield>
+      <input type="hidden" value="SECRET_HTML_INPUT"/>
+    </detail>`, "application/xml");
+    expect(detail).toContain("Visible message");
+    expect(detail).not.toContain("SECRET_");
+  });
+
+  it("removes structured JSON secrets and never returns an undecodable raw body", () => {
+    const detail = normalizeDetailText(JSON.stringify({
+      message: "Visible message",
+      sessionId: "SECRET_SESSION",
+      fields: [{ name: "csrfToken", value: "SECRET_FIELD" }, { type: "hidden", value: "SECRET_HIDDEN" }]
+    }), "application/json");
+    expect(detail).toContain("Visible message");
+    expect(detail).not.toContain("SECRET_");
+    expect(normalizeDetailText('{"password":"SECRET_BROKEN"', "application/json")).not.toContain("SECRET_BROKEN");
+  });
+
   it("reads authenticated session details from services XML", () => {
     const status = parseSessionStatus(`
       <asx:abap><asx:values><SERVICE><HEAD>

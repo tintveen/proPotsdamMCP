@@ -17,6 +17,8 @@ Use [GitHub private vulnerability reporting](https://github.com/tintveen/proPots
 
 This project is pre-1.0. Security fixes are handled only on the current `0.4.x` line and `main` unless a release branch is explicitly documented. Version `0.3.0` remains installable but is no longer supported.
 
+Use version 0.4.2 or later for the portal transport, detail redaction, authentication, account cache, exact-value submission, and uncertain-response fixes.
+
 ## Local Sensitive Data
 
 By default, the password is stored in the macOS Keychain under the `propotsdam-mcp` service. Local config, session cookies, traces, shared pending actions and their temporary staged attachments or normalized report photos, and exports live under:
@@ -28,6 +30,8 @@ By default, the password is stored in the macOS Keychain under the `propotsdam-m
 Remove or redact this data before sharing logs, traces, test fixtures, or issue details.
 
 Every pending action can be claimed only during its ten-minute review window and is stored in a versioned HMAC envelope bound to its kind, destination, reviewed payload, remote contract, and artifact hashes. Records persist safely across restarts and transition atomically from `staged` to `claimed`. Maintenance cannot remove an active in-process claim; after a restart, an abandoned claim becomes cleanup-eligible only after a separate ten-minute stale-claim window. Portal actions additionally remain bound to the authenticated account, target, values, and form contract, and ordinary transport methods reject portal writes without a claimed action's internal permit. The LLM or MCP host—not the MCP server—is responsible for showing the full review, yielding, and waiting for explicit conversational approval before calling the destructive generic commit tool. A UI may create a visible user-authored approval message but may not call commit directly. Tool annotations are advisory and do not independently enforce consent. Once a state-changing request may have been dispatched, the server consumes the pending action and never retries it automatically.
+
+Portal requests are restricted to the configured origin before session headers are attached. Read redirects are followed manually, with the origin and read-only action guard checked at every hop and a five-redirect limit. Authentication and permitted write requests never follow redirects. Hidden form values and secret fields are removed before detail text is flattened. Cached reads revalidate the authenticated account; login, logout, account changes, and dispatched writes invalidate the caches.
 
 ## External Waste Services
 

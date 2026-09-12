@@ -15,6 +15,7 @@ import type {
   StructuredPortalRecordConfidence
 } from "../types.js";
 import { collectObjects, firstScalar, flattenScalars, parseXml } from "./xml.js";
+import { isSecretKey, redactSecrets } from "../utils/redact.js";
 
 const DATE_PATTERN = /\b\d{1,2}\.\d{1,2}\.\d{2,4}\b/;
 const ACTION_FIELD_TAGS = [
@@ -44,21 +45,24 @@ export function parseBody(text: string, contentType?: string): unknown {
 
 export function parseSessionStatus(text: string, contentType?: string): AuthResult {
   const parsed = parseBody(text, contentType);
-  const scalars = flattenScalars(parsed);
-  const logged = firstScalar(scalars, ["LOGGED", "logged"]);
-  const userId = firstScalar(scalars, ["USER_ID", "@user", "user"]);
-  const userFullName = firstScalar(scalars, ["USER_FULLNAME", "userFullName", "name"]);
-  const authenticated = Boolean(
-    userId ||
-      userFullName ||
-      (logged && !["false", "0", "", "N"].includes(logged.toUpperCase()))
+  const headers = collectNamedObjects(parsed, "SERVICE").flatMap((service) =>
+    Object.entries(service)
+      .filter(([key]) => key.toLowerCase() === "head")
+      .flatMap(([, value]) => value && typeof value === "object" && !Array.isArray(value) ? [value] : [])
   );
+  const scalars = headers.length === 1 ? immediateScalars(headers[0] as Record<string, unknown>) : {};
+  const loggedEntry = Object.entries(scalars).find(([key]) => key.toLowerCase() === "logged");
+  const userId = firstScalar(scalars, ["USER_ID", "@user", "user"]);
+  const userFullName = firstScalar(scalars, ["USER_FULLNAME", "userFullName"]);
+  const authenticated = loggedEntry
+    ? ["X", "TRUE", "1", "Y", "YES"].includes(loggedEntry[1].trim().toUpperCase())
+    : Boolean(userId);
 
   return {
     state: authenticated ? "authenticated" : "unauthenticated",
     authenticated,
-    userId,
-    userFullName
+    userId: authenticated ? userId : undefined,
+    userFullName: authenticated ? userFullName : undefined
   };
 }
 
@@ -212,11 +216,44 @@ export function extractPortalActions(
 export function normalizeDetailText(text: string, contentType?: string): string {
   try {
     const parsed = parseBody(text, contentType);
-    const scalars = flattenScalars(parsed);
+    const scalars = flattenScalars(redactSecrets(safeDetailValues(parsed)));
     return Object.values(scalars).filter(Boolean).join("\n").slice(0, 8000);
   } catch {
-    return text.replace(/\s+/g, " ").trim().slice(0, 8000);
+    // Raw structured bodies can contain values whose secret field names are
+    // no longer recoverable. Never return them as an error fallback.
+    if (/json|xml|html/i.test(contentType ?? "") || /^\s*[<{\[]/.test(text)) {
+      return "Portal response could not be safely decoded.";
+    }
+    return redactSecrets(text.replace(/\s+/g, " ").trim().slice(0, 8000)) as string;
   }
+}
+
+function safeDetailValues(value: unknown, tagName = ""): unknown {
+  const localTag = tagName.split(":").at(-1)!.toLowerCase();
+  if (localTag === "hiddenfield") {
+    return {};
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => safeDetailValues(entry, tagName));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const object = value as Record<string, unknown>;
+  const metadata = new Map(Object.entries(immediateScalars(object)).map(([key, entry]) =>
+    [key.replace(/^@/, "").split(":").at(-1)!.toLowerCase(), entry.trim()]
+  ));
+  const hidden = ["hidden", "password"].includes(metadata.get("type")?.toLowerCase() ?? "")
+    || metadata.get("visibility")?.toLowerCase() === "hidden"
+    || ["true", "1", "x", "yes"].includes(metadata.get("hidden")?.toLowerCase() ?? "");
+  const field = /field$|^input$/.test(localTag) || metadata.has("value") || metadata.has("#text");
+  const secretField = field && ["id", "name", "refname"].some((key) => isSecretKey(metadata.get(key) ?? ""));
+  if (hidden || secretField) {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(object)
+    .filter(([key]) => !isSecretKey(key))
+    .map(([key, entry]) => [key, safeDetailValues(entry, key)]));
 }
 
 export function extractPortalFileItems(records: PortalRecordItem[]): PortalFileItem[] {
