@@ -13,7 +13,7 @@ export function workflowChecks(workflow) {
   return [
     check("workflow.events", trigger && Object.hasOwn(trigger, "pull_request") && unrestricted(trigger.pull_request) && trigger.push?.branches?.includes("main") && !trigger.push?.paths && !trigger.push?.["paths-ignore"] ? "PASS" : "BLOCK", "Safeguards run on every PR and push to main, without path filters"),
     check("workflow.permissions", safePermissions(workflow.permissions) && !job?.permissions && !Object.hasOwn(trigger ?? {}, "pull_request_target") ? "PASS" : "BLOCK", "Safeguard workflow uses read-only permissions and unprivileged PR events"),
-    check("workflow.required-job", job?.name === "Engineering safeguards" && !job.if && !job["continue-on-error"] && !job.needs && steps.some((s) => s.run === "npm run engineering:check" && !s.if && !s["continue-on-error"]) && steps.every((s) => !s.uses || /@[a-f0-9]{40}$/.test(s.uses)) ? "PASS" : "BLOCK", "Stable required job, mandatory verification, pinned actions"),
+    check("workflow.required-job", job?.name === "Engineering safeguards" && !Object.hasOwn(job, "if") && !job["continue-on-error"] && !job.needs && steps.some((s) => s.run === "npm run engineering:check" && !Object.hasOwn(s, "if") && !s["continue-on-error"]) && steps.every((s) => !s.uses || /@[a-f0-9]{40}$/.test(s.uses)) ? "PASS" : "BLOCK", "Stable required job, mandatory verification, pinned actions"),
     check("workflow.offline", !/codex|OPENAI_API_KEY|PROPPOTSDAM_(?:USERNAME|PASSWORD)|secrets\./i.test(JSON.stringify(workflow)) ? "PASS" : "BLOCK", "Deterministic CI does not require AI login or portal credentials")
   ];
 }

@@ -152,6 +152,8 @@ test("workflow validation detects skipped gates, permissions and credential use"
     (w) => { w.on.push["paths-ignore"] = ["docs/**"]; },
     (w) => { w.permissions.contents = "write"; },
     (w) => { w.jobs.safeguards.if = "false"; },
+    (w) => { w.jobs.safeguards.if = false; },
+    (w) => { w.jobs.safeguards.steps[1].if = false; },
     (w) => { w.jobs.safeguards["continue-on-error"] = true; },
     (w) => { w.jobs.safeguards.steps[1]["continue-on-error"] = true; },
     (w) => { w.jobs.safeguards.steps[1].run = "codex exec review"; },
