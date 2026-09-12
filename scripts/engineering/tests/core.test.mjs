@@ -17,7 +17,7 @@ function snapshot() {
     branch: { required_status_checks: { strict: true, contexts: REQUIRED_CHECKS, checks: REQUIRED_CHECKS.map((context) => ({ context, app_id: ACTIONS_APP_ID })) }, required_pull_request_reviews: { required_approving_review_count: 0, require_code_owner_reviews: false, require_last_push_approval: false }, enforce_admins: { enabled: true }, required_linear_history: { enabled: true }, required_conversation_resolution: { enabled: true }, allow_force_pushes: { enabled: false }, allow_deletions: { enabled: false } },
     tags: [{ id: 1, target: "tag", enforcement: "active", conditions: { ref_name: { include: ["refs/tags/v*"], exclude: [] } }, rules: [{ type: "update" }, { type: "deletion" }], bypass_actors: [] }],
     workflow: { default_workflow_permissions: "read", can_approve_pull_request_reviews: false },
-    environment: { can_admins_bypass: false, protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User", reviewer: { login: "tintveen" } }] }], deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } },
+    environment: { can_admins_bypass: false, protection_rules: [{ type: "required_reviewers", prevent_self_review: false, reviewers: [{ type: "User", reviewer: { login: "tintveen" } }] }], deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } },
     deployments: { total_count: 1, branch_policies: [{ name: "v*", type: "tag" }] }
   };
 }
@@ -69,6 +69,8 @@ test("all release and branch protections are inspected", () => {
     (s) => { s.workflow.can_approve_pull_request_reviews = true; },
     (s) => { s.environment.can_admins_bypass = true; },
     (s) => { s.environment.protection_rules = []; },
+    (s) => { s.environment.protection_rules[0].prevent_self_review = true; },
+    (s) => { delete s.environment.protection_rules[0].prevent_self_review; },
     (s) => { s.environment.protection_rules[0].reviewers[0].reviewer.login = "other"; },
     (s) => { s.deployments.branch_policies[0].type = "branch"; },
     (s) => { s.deployments.branch_policies[0].name = "*"; }

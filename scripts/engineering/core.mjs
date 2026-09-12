@@ -82,8 +82,9 @@ export function protectionChecks(snapshot) {
   require("github.release-tags", tags.some((r) => r.target === "tag" && r.enforcement === "active" && r.conditions?.ref_name?.include?.includes("refs/tags/v*") && r.conditions.ref_name.exclude?.length === 0 && r.bypass_actors?.length === 0 && ["update", "deletion"].every((type) => r.rules?.some((rule) => rule.type === type))), "Immutable v* tags with no bypass actors");
   require("github.secrets", repo.security_and_analysis?.secret_scanning?.status === "enabled" && repo.security_and_analysis?.secret_scanning_push_protection?.status === "enabled", "Secret scanning and push protection enabled");
   require("github.workflow-permissions", workflow.default_workflow_permissions === "read" && workflow.can_approve_pull_request_reviews === false, "Read-only default token; workflows cannot approve PRs");
-  const reviewers = env.protection_rules?.find((rule) => rule.type === "required_reviewers")?.reviewers;
-  require("github.npm-environment", env.can_admins_bypass === false && reviewers?.length === 1 && reviewers[0].type === "User" && reviewers[0].reviewer?.login === "tintveen" && env.deployment_branch_policy?.protected_branches === false && env.deployment_branch_policy?.custom_branch_policies === true && deployments.total_count === 1 && deployments.branch_policies?.length === 1 && deployments.branch_policies[0].name === "v*" && deployments.branch_policies[0].type === "tag", "npm-release retains its reviewer, v* tag restriction, and no administrator bypass");
+  const releaseReview = env.protection_rules?.find((rule) => rule.type === "required_reviewers");
+  const reviewers = releaseReview?.reviewers;
+  require("github.npm-environment", env.can_admins_bypass === false && releaseReview?.prevent_self_review === false && reviewers?.length === 1 && reviewers[0].type === "User" && reviewers[0].reviewer?.login === "tintveen" && env.deployment_branch_policy?.protected_branches === false && env.deployment_branch_policy?.custom_branch_policies === true && deployments.total_count === 1 && deployments.branch_policies?.length === 1 && deployments.branch_policies[0].name === "v*" && deployments.branch_policies[0].type === "tag", "npm-release retains its reviewer with self-review allowed, v* tag restriction, and no administrator bypass");
   return result;
 }
 
