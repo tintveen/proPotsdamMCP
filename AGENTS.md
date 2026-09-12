@@ -1,76 +1,39 @@
 # Repository Instructions
 
-## Environment
-- Use Node.js 26 or newer.
-- Install dependencies with `npm ci`.
-- Build output is generated in `dist/` and must not be committed.
-- The saved Codex Cloud environment has no portal credentials. Only for separately authorized live tasks, set:
-  - `PROPPOTSDAM_USERNAME`
-  - `PROPPOTSDAM_PASSWORD`
-  - `PROPPOTSDAM_DATA_DIR=/tmp/propotsdam-mcp-codex`
-  - optionally `PROPPOTSDAM_BASE_URL`
+## Working agreement
 
-## Codex Cloud Environment
-- Environment name: `proPotsdamMCP-live`
-- Repository: `tintveen/proPotsdamMCP`
-- Branch: `main`
-- Runtime: Node.js `26.8.1` with npm `11.19.0`, installed by the setup script.
-- Container image: `universal`; the UI's preinstalled Node 22 is only the bootstrap runtime. Both scripts select Node 26 explicitly and persist it as the default for new shells.
-- Setup script:
-  ```bash
-  set +x
-  set -eo pipefail
-  source "${NVM_DIR:-/root/.nvm}/nvm.sh"
-  nvm install 26.8.1
-  nvm alias default 26.8.1
-  nvm use 26.8.1
-  if [ "$(npm --version)" != "11.19.0" ]; then
-    npm install --global npm@11.19.0
-  fi
-  set -u
-  test "$(node --version)" = "v26.8.1"
-  test "$(npm --version)" = "11.19.0"
-  sudo apt-get update
-  sudo apt-get install -y libsecret-1-dev
-  npm ci
-  npm run build
-  ```
-- Maintenance script:
-  ```bash
-  set +x
-  set -eo pipefail
-  source "${NVM_DIR:-/root/.nvm}/nvm.sh"
-  nvm alias default 26.8.1
-  nvm use 26.8.1
-  set -u
-  test "$(node --version)" = "v26.8.1"
-  test "$(npm --version)" = "11.19.0"
-  npm ci
-  npm run build
-  ```
-- Agent internet access: off for credentials-free development and release validation. Setup and maintenance retain network access to install dependencies.
-- Live access requires separate authorization and a mechanism that enforces these exact host/method restrictions; do not approximate them with a broader global method allowance:
-  - `propotsdam-kundenportal.easysquare.com` — `GET`, `HEAD`, `OPTIONS`, `POST`
-  - `www.swp-potsdam.de` — `GET`, `POST`
-  - `mitgestalten.potsdam.de` — `GET`, `POST`
-  - `sg.geodatenzentrum.de` — `GET`
-- Do not enable unrestricted internet.
+- Read [the engineering guide](docs/engineering.md) for the workflow, safety policy, evidence requirements, and environment setup. Its safety rules apply to every task.
+- Turn requests into observable acceptance examples and identify the safety rules affected. Choose routine implementation and testing approaches independently. Ask the user about product behavior, material cost, new permissions, or a material risk that cannot be resolved from evidence.
+- Keep changes focused and preserve the existing TypeScript, Vitest, and MCP server patterns. Preserve unrelated edits; use an isolated checkout when needed.
+- Require independent review for runtime, dependency, test, workflow, agent-instruction, and safety or release-policy changes. Ordinary documentation work receives proportional checks. The [review boundary](docs/engineering.md#independent-review) explains the distinction.
+- For reproducible defects, capture failing-before and passing-after evidence. Treat any weakening of verification or permissions as an explicit scope decision, even if it makes a check pass.
+- Follow authorization already given for the current task. An implementation request does not itself authorize a release. Prepare the reviewable result before asking for a missing decision.
+- Finish meaningful tasks with **Changed, Verified, Unverified, Tradeoff, Recommendation, Decision needed**. State the user-visible outcome, evidence, and remaining limits in plain language; use “None” where appropriate.
 
-## Commands
-- Typecheck: `npm run check`
-- Build: `npm run build`
-- Test: `npm test`
-- Release check: `npm run release:check`
-- Live portal test: `npm run test:live`
+## Environment and commands
 
-## Live Portal Safety
-- `npm run test:live` is opt-in only and must not be run unless the user explicitly asks for a live portal check.
-- Do not print, paste, commit, or expose portal passwords, session cookies, CSRF tokens, raw traces, exports, screenshots with personal data, or personal portal records.
-- Summarize live portal results with counts and high-level status only unless the user explicitly asks for specific redacted details.
-- Portal write commits are allowed only after the exact staged action was shown and the user explicitly approved it in a new message in the same task. Pending-action handles stay hidden and are passed only through structured tool data. Read, prepare, stage, list, and cancel actions are otherwise acceptable.
-- STEP pickup and Potsdam abandoned-waste commits follow the same conversational-approval rule: no live external write without a newly staged review and explicit approval in a later user message in the same task.
-- Automated tests must never create a real STEP pickup request or Potsdam report. Use injected fetch implementations and redacted fixtures.
+- Use Node.js 26 or newer and install dependencies with `npm ci`.
+- Release validation uses the official Node.js `26.8.1` distribution and npm `11.19.0`; see [release readiness](docs/engineering.md#release-readiness).
+- Build output in `dist/` must not be committed.
+- Typecheck: `npm run check`; build: `npm run build`; tests: `npm test`; package and release validation: `npm run release:check`.
+- Readiness: `npm run engineering:doctor`; deterministic safeguards: `npm run engineering:check`.
+- Independent review of a clean, committed candidate: `npm run engineering:review -- --base <ref>`.
+- Integration readiness without merging: `npm run engineering:preflight -- --pr <number>`.
+- Before proposing a PR, run `npm run check`, `npm run build`, and `npm test`; sensitive changes also need the engineering safeguards and independent review.
+- The saved Cloud environment has no portal credentials. Use the exact [Codex Cloud setup and access restrictions](docs/engineering.md#codex-cloud-environment); do not enable unrestricted internet.
 
-## Pull Requests
-- Before proposing a PR, run `npm run check`, `npm run build`, and `npm test`.
-- Keep changes focused and preserve the existing TypeScript, Vitest, and MCP server patterns.
+## Live safety
+
+- `npm run test:live` is opt-in only and requires an explicit request for a live portal check.
+- Keep credentials, cookies, tokens, raw traces, exports, screenshots with personal data, and personal portal records out of output and Git. Use synthetic data for automated checks.
+- Portal, STEP pickup, and Potsdam abandoned-waste commits require the exact staged action to be shown and explicit approval in a later user message in the same task. Keep pending-action handles hidden in structured tool data.
+- After an uncertain external write, stop and reconcile its outcome before deciding what to do next. Do not retry automatically.
+- Read the complete [live safety policy](docs/engineering.md#live-safety-policy) before handling any live task.
+
+## Repository skills
+
+The automatically discoverable skills in `.agents/skills` share the engineering guide:
+
+- [propotsdam-implement](.agents/skills/propotsdam-implement/SKILL.md): acceptance cases, implementation, verification, and integration evidence.
+- [propotsdam-review](.agents/skills/propotsdam-review/SKILL.md): independent review of changes and surrounding call paths without editing them.
+- [propotsdam-release](.agents/skills/propotsdam-release/SKILL.md): authorized releases, reviewed commits, publication reconciliation, and public artifact integrity.

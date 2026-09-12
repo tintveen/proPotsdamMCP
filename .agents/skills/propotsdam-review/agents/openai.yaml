@@ -1,0 +1,4 @@
+interface:
+  display_name: "ProPotsdam independent review"
+  short_description: "Review changes independently without editing code"
+  default_prompt: "Use $propotsdam-review to independently review this candidate and report reproducible findings and verification limits."

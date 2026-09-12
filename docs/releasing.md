@@ -2,6 +2,8 @@
 
 Releases are built from a clean commit on `main`, published under the protected `npm-release` GitHub environment, and attached to a matching GitHub Release. Do not run `npm run test:live` or use portal credentials during a release.
 
+Use the [engineering workflow](engineering.md#release-readiness) for current authorization, independent review, local readiness commands, and reconciliation of uncertain publication outcomes before applying this procedure.
+
 Before any release tag is pushed, the `npm-release` environment must require `tintveen` as a reviewer, allow self-review for the single-owner repository, disable administrator bypass, and restrict deployments to `v*` tags.
 
 ## Prepare a Version

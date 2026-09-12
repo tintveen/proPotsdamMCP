@@ -117,6 +117,27 @@ describe("PortalClient HTTP flow", () => {
     expect(actions[0]?.fields.find((field) => field.name === "msg_txt")?.value).toBe(description);
   });
 
+  it.each(generatedReviewedTextCases())("round-trips generated reviewed text case $id through the submitted XML", async ({ value }) => {
+    const { client, requests } = await createMockClient({
+      loggedServicesBody: servicesWithRepairDetail(),
+      repairDetailForm: true
+    });
+    const staged = await client.stagePortalAction("cmdsend", {
+      msg_txt: value,
+      TOPIC_IB_DOOR_1: "TUEROEFFNER"
+    });
+    expect(staged.ok).toBe(true);
+    expect(staged.diff.find((entry) => entry.name === "msg_txt")?.proposedValue).toBe(value);
+    await expect(commitOne(client, staged.pendingWriteHandle!)).resolves.toMatchObject({ outcome: "succeeded" });
+    const saves = requests.filter((request) => request.method === "POST" && request.url.includes("name=save"));
+    expect(saves).toHaveLength(1);
+    const xml = String(saves[0]!.body);
+    expect(XMLValidator.validate(xml)).toBe(true);
+    const { extractPortalActions } = await import("../src/portal/parsers.js");
+    const actions = extractPortalActions(xml, "application/xml", { serviceUrl: "/repair-service", xuclass: "ESQ_TENA_DMG" }, { source: "detail" });
+    expect(actions[0]?.fields.find((field) => field.name === "msg_txt")?.value).toBe(value);
+  });
+
   it("logs in with Keychain credentials and saves a validated session", async () => {
     const { client, requests } = await createMockClient();
 
@@ -1157,6 +1178,22 @@ async function commitOne(
 ): Promise<PortalCommitResult> {
   const batch = await client.commitPendingWrites([pendingWriteHandle]);
   return batch.results[0]!;
+}
+
+function generatedReviewedTextCases(): Array<{ id: number; value: string }> {
+  // Fixed seed and XML-valid text: reproduce every generated counterexample exactly.
+  const fragments = ["$100", "$&", "$1", "$$", "$'", "$" + String.fromCharCode(96), "<tag>", "&", '"', "'", "]]>", "&amp;", "äöü", "漢字", "🙂", "\n", "\t", "\\path\\"];
+  const values = fragments.map((fragment) => `Synthetic before ${fragment} after`);
+  let state = 0xc0decafe;
+  for (let index = 0; index < 24; index += 1) {
+    let value = `Synthetic combination ${index}: `;
+    for (let fragment = 0; fragment < 8; fragment += 1) {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      value += fragments[state % fragments.length]!;
+    }
+    values.push(value + " end");
+  }
+  return values.map((value, id) => ({ id, value }));
 }
 
 async function createMockClient(options: {
