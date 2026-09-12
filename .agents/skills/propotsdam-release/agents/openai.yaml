@@ -1,0 +1,4 @@
+interface:
+  display_name: "ProPotsdam release verification"
+  short_description: "Verify authorized releases and public artifacts"
+  default_prompt: "Use $propotsdam-release to verify the authorized release, its reviewed commit, and the final public artifacts."

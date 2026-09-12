@@ -1,0 +1,4 @@
+interface:
+  display_name: "ProPotsdam implementation"
+  short_description: "Implement focused changes with verified evidence"
+  default_prompt: "Use $propotsdam-implement to implement this request with observable acceptance cases and verification evidence."

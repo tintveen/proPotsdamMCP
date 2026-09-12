@@ -35,6 +35,10 @@ describe("CookieSession", () => {
     const server = createServer((request, response) => {
       requests.push(request.url!);
       request.resume();
+      if (request.url === "/unapproved") {
+        response.writeHead(200).end("Synthetic replay received");
+        return;
+      }
       response.writeHead(307, { location: "/unapproved" }).end();
     });
     server.listen(0, "127.0.0.1");
@@ -46,7 +50,11 @@ describe("CookieSession", () => {
       const dispatch = () => method === "GET"
         ? session.writeGet(permit, "/approved", { redirect: "follow" })
         : session.writePost(permit, "/approved", "synthetic-body", { redirect: "follow" });
-      await expect(dispatch()).rejects.toThrow(/redirect refused/);
+      let dispatchError: unknown;
+      try { await dispatch(); } catch (error) { dispatchError = error; }
+      // Assert the externally observable boundary before inspecting the local error.
+      expect(requests).toEqual(["/approved"]);
+      expect(dispatchError).toMatchObject({ message: expect.stringMatching(/redirect refused/) });
       await expect(dispatch()).rejects.toThrow(/already used/);
       expect(requests).toEqual(["/approved"]);
     } finally {

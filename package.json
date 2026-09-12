@@ -38,7 +38,11 @@
     "release:check": "npm run check && npm test && npm audit --audit-level=high && npm audit --omit=dev --audit-level=high && npm run package:verify",
     "test": "vitest run",
     "test:live": "PROPPOTSDAM_LIVE_TEST=1 vitest run tests/live-read-pass.test.ts",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "engineering:doctor": "node scripts/engineering/cli.mjs doctor",
+    "engineering:review": "node scripts/engineering/cli.mjs review",
+    "engineering:check": "node scripts/engineering/cli.mjs check",
+    "engineering:preflight": "node scripts/engineering/cli.mjs preflight"
   },
   "keywords": [
     "mcp",
@@ -62,6 +66,7 @@
     "@types/node": "^26.4.0",
     "tsx": "^4.20.5",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.1"
   }
 }

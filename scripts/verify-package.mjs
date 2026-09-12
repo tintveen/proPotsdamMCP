@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { cleanEnvironment } from "./engineering/core.mjs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -21,6 +24,7 @@ try {
   const installDirectory = join(scratch, "install");
   const dataDirectory = join(scratch, "data");
   await Promise.all([mkdir(packDirectory), mkdir(publishDirectory), mkdir(installDirectory), mkdir(dataDirectory)]);
+  await Promise.all([writeFile(join(scratch, "user.npmrc"), ""), writeFile(join(scratch, "global.npmrc"), "")]);
 
   const packResult = await run("npm", ["pack", "--json", "--silent", "--pack-destination", packDirectory], {
     cwd: repositoryRoot
@@ -49,7 +53,7 @@ try {
   assert((executable.mode & 0o111) !== 0, "dist/bin.js must be executable in the package archive");
 
   const forbiddenPatterns = [
-    /^(?:src|tests|\.github|node_modules|coverage|backlog)\//,
+    /^(?:src|tests|scripts|\.github|\.agents|\.codex|engineering|node_modules|coverage|backlog)\//,
     /(?:^|\/)\.env(?:\.|$)/,
     /(?:^|\/)(?:config|session)\.json$/,
     /(?:^|\/)traces\//,
@@ -64,12 +68,15 @@ try {
 
   const archivePath = join(packDirectory, record.filename);
   await copyFile(archivePath, join(publishDirectory, record.filename));
-  // Exercise npm's local-file parsing without publishing or running lifecycle scripts.
-  const publishDryRun = await run(
+  // Existing public versions must remain verifiable. A synthetic registry makes
+  // npm's version-availability probe independent of whether this version was
+  // published, while still exercising its real local-tarball publish dry run.
+  const publishDryRun = await withSyntheticRegistry(async (registry) => run(
     "npm",
-    ["publish", `./release-artifacts/${record.filename}`, "--dry-run", "--ignore-scripts", "--access", "public", "--json"],
-    { cwd: scratch }
-  );
+    ["publish", `./release-artifacts/${record.filename}`, "--dry-run", "--ignore-scripts", "--access", "public", "--json",
+      "--registry", registry, "--userconfig", join(scratch, "user.npmrc"), "--globalconfig", join(scratch, "global.npmrc"), "--cache", join(scratch, "npm-cache")],
+    { cwd: scratch, env: cleanEnvironment() }
+  ));
   const dryRunRecord = JSON.parse(publishDryRun.stdout)[packageJson.name];
   assert.equal(dryRunRecord?.version, expectedVersion, "publish dry-run must select the packed version");
   assert.equal(dryRunRecord?.integrity, record.integrity, "publish dry-run must preserve archive integrity");
@@ -128,6 +135,26 @@ try {
 function installedBinary(installDirectory, name) {
   const suffix = process.platform === "win32" ? ".cmd" : "";
   return join(installDirectory, "node_modules", ".bin", `${name}${suffix}`);
+}
+
+async function withSyntheticRegistry(operation) {
+  const requests = [];
+  const registry = createServer((request, response) => {
+    requests.push({ method: request.method, path: request.url, authorized: Boolean(request.headers.authorization) });
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "Synthetic registry has no published versions" }));
+  });
+  registry.listen(0, "127.0.0.1");
+  await once(registry, "listening");
+  try {
+    const address = registry.address();
+    const result = await operation(`http://127.0.0.1:${address.port}/`);
+    assert(requests.some((request) => request.path === "/propotsdam-mcp"), "dry run must probe the synthetic registry");
+    assert(requests.every((request) => request.method === "GET" && !request.authorized), "dry run must never publish or send registry credentials");
+    return result;
+  } finally {
+    await new Promise((resolve, reject) => registry.close((error) => error ? reject(error) : resolve()));
+  }
 }
 
 async function verifyMcpHandshake(command, cwd, dataDirectory) {
