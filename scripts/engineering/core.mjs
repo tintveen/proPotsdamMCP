@@ -5,7 +5,7 @@ const exec = promisify(execFile);
 export const REPOSITORY = "tintveen/proPotsdamMCP";
 export const REQUIRED_CHECKS = ["Node 26 / macOS", "npm audit", "Engineering safeguards"];
 export const ACTIONS_APP_ID = 15368;
-export const RELEASE = { node: "26.8.1", npm: "11.19.0" };
+export const RELEASE = { node: "26.12.1", npm: "11.20.0" };
 export const check = (id, status, detail) => ({ id, status, detail });
 export const summarize = (checks) => ({
   status: checks.some((c) => c.status === "BLOCK") ? "BLOCK" : checks.length === 0 || checks.some((c) => c.status === "UNVERIFIED") ? "UNVERIFIED" : "PASS",
