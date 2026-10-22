@@ -119,7 +119,7 @@ test("only ordinary documentation receives lighter review", () => {
 });
 
 test("missing CLI/auth capabilities are UNVERIFIED and never need an API key", async () => {
-  const ready = { node: "v26.8.1", npm: good("11.19.0"), codexHelp: good(REVIEW_CAPABILITIES.join("\n")), codexLogin: good("Logged in using ChatGPT"), gh: good("gh version 2") };
+  const ready = { node: "v26.12.1", npm: good("11.20.0"), codexHelp: good(REVIEW_CAPABILITIES.join("\n")), codexLogin: good("Logged in using ChatGPT"), gh: good("gh version 2") };
   assert.equal(summarize(capabilityChecks(ready)).status, "PASS");
   for (const key of ["npm", "codexHelp", "codexLogin", "gh"]) assert.equal(summarize(capabilityChecks({ ...ready, [key]: absent })).status, "UNVERIFIED");
   assert.equal(summarize(capabilityChecks({ ...ready, codexLogin: good("Logged in using an API key") })).status, "UNVERIFIED");

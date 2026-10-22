@@ -13,7 +13,7 @@
 ## Environment and commands
 
 - Use Node.js 26 or newer and install dependencies with `npm ci`.
-- Release validation uses the official Node.js `26.8.1` distribution and npm `11.19.0`; see [release readiness](docs/engineering.md#release-readiness).
+- Release validation uses the official Node.js `26.12.1` distribution and npm `11.20.0`; see [release readiness](docs/engineering.md#release-readiness).
 - Build output in `dist/` must not be committed.
 - Typecheck: `npm run check`; build: `npm run build`; tests: `npm test`; package and release validation: `npm run release:check`.
 - Readiness: `npm run engineering:doctor`; deterministic safeguards: `npm run engineering:check`.

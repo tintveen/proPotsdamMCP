@@ -91,7 +91,7 @@ After a post-dispatch result is uncertain, preserve the uncertainty and consumed
 
 Read [the release procedure](releasing.md) and inspect the current task's existing authorization. Building, reviewing, merging, tagging, publishing, and approving the protected environment are distinct actions; do not infer authorization for a later action merely from an earlier one. If release authorization already covers a concrete action, continue within that scope without requesting it again. Prepare all permitted evidence before asking for a genuinely missing decision.
 
-Run `npm run engineering:doctor -- --release` using the official Node.js **26.8.1** distribution and npm **11.19.0**, matching both release jobs. This also compares the active Node binary against a checksum-verified official archive. An ambient Node version that satisfies development requirements is insufficient for release byte comparisons. A rebuilt distribution can use a different zlib and produce different archive bytes despite a matching Node version. Resolve the official runtime's executables explicitly; do not change global CLI configuration to make a local check pass.
+Run `npm run engineering:doctor -- --release` using the official Node.js **26.12.1** distribution and npm **11.20.0**, matching both release jobs. This also compares the active Node binary against a checksum-verified official archive. An ambient Node version that satisfies development requirements is insufficient for release byte comparisons. A rebuilt distribution can use a different zlib and produce different archive bytes despite a matching Node version. Resolve the official runtime's executables explicitly; do not change global CLI configuration to make a local check pass.
 
 Validate the clean reviewed commit, current protections and CI, version agreement, package contents, and the exact archive's integrity. Run the repository release checks with synthetic data. Workflow files, repository skills, development helpers, tests, local review evidence, credentials, and personal data must remain outside the npm archive. Keep `dist/` generated and untracked. Use the existing protected publication path and compare the public registry integrity and GitHub asset checksum with the reviewed archive. A dry-run success does not establish publication authorization or prove publication.
 
@@ -115,9 +115,11 @@ State separately what GitHub enforced and what the local workflow verified when 
 - Environment name: `proPotsdamMCP-live`
 - Repository: `tintveen/proPotsdamMCP`
 - Branch: `main`
-- Runtime: Node.js `26.8.1` with npm `11.19.0`, installed by the setup script.
+- Runtime: Node.js `26.12.1` with npm `11.20.0`, installed by the setup script.
 - Container image: `universal`; the UI's preinstalled Node 22 is only the bootstrap runtime. Both scripts select Node 26 explicitly and persist it as the default for new shells.
 - The saved environment has no portal credentials. Only for separately authorized live tasks, set `PROPPOTSDAM_USERNAME`, `PROPPOTSDAM_PASSWORD`, `PROPPOTSDAM_DATA_DIR=/tmp/propotsdam-mcp-codex`, and optionally `PROPPOTSDAM_BASE_URL`.
+
+After changing the runtime pins, apply and rerun the setup script in existing Cloud environments before using maintenance; changing this document does not update a saved environment.
 
 Setup script:
 
@@ -125,15 +127,15 @@ Setup script:
 set +x
 set -eo pipefail
 source "${NVM_DIR:-/root/.nvm}/nvm.sh"
-nvm install 26.8.1
-nvm alias default 26.8.1
-nvm use 26.8.1
-if [ "$(npm --version)" != "11.19.0" ]; then
-  npm install --global npm@11.19.0
+nvm install 26.12.1
+nvm alias default 26.12.1
+nvm use 26.12.1
+if [ "$(npm --version)" != "11.20.0" ]; then
+  npm install --global npm@11.20.0
 fi
 set -u
-test "$(node --version)" = "v26.8.1"
-test "$(npm --version)" = "11.19.0"
+test "$(node --version)" = "v26.12.1"
+test "$(npm --version)" = "11.20.0"
 sudo apt-get update
 sudo apt-get install -y libsecret-1-dev
 npm ci
@@ -146,11 +148,11 @@ Maintenance script:
 set +x
 set -eo pipefail
 source "${NVM_DIR:-/root/.nvm}/nvm.sh"
-nvm alias default 26.8.1
-nvm use 26.8.1
+nvm alias default 26.12.1
+nvm use 26.12.1
 set -u
-test "$(node --version)" = "v26.8.1"
-test "$(npm --version)" = "11.19.0"
+test "$(node --version)" = "v26.12.1"
+test "$(npm --version)" = "11.20.0"
 npm ci
 npm run build
 ```

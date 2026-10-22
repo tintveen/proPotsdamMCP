@@ -9,8 +9,9 @@ Before any release tag is pushed, the `npm-release` environment must require `ti
 ## Prepare a Version
 
 1. Update `package.json`, `package-lock.json`, and the pinned version in `README.md` in one pull request. The CLI and MCP handshake both derive their version from `package.json`.
-   Current releases use Node.js `26.8.1` and npm `11.19.0`; keep local release evidence and both release jobs aligned to this exact toolchain.
-   Use the official Node.js binary, not a rebuilt distribution such as Homebrew: different bundled zlib implementations can produce different archive bytes even with the same Node.js version. For example, run `npm exec --yes --package=node@26.8.1 --package=npm@11.19.0 -- npm run release:check` to match the workflow's packer.
+   Current releases use Node.js `26.12.1` and npm `11.20.0`; keep local release evidence and both release jobs aligned to this exact toolchain.
+   Node.js `26.12.1` is a [security release](https://nodejs.org/en/blog/release/v26.12.1) and [bundles npm `11.20.0`](https://github.com/nodejs/node/blob/v26.12.1/deps/npm/package.json). This updates the release toolchain only; dependency vulnerabilities remain subject to both existing npm audit gates and can still block release readiness.
+   Use the official Node.js binary, not a rebuilt distribution such as Homebrew: different bundled zlib implementations can produce different archive bytes even with the same Node.js version. For example, run `npm exec --yes --package=node@26.12.1 --package=npm@11.20.0 -- npm run release:check` to match the workflow's packer.
 2. Run `npm ci`, `npm run release:check`, `git diff --check`, and a targeted secret scan.
 3. Inspect `npm pack --json` and confirm the archive contains no source, tests, credentials, traces, or personal data.
    `release:check` also dry-runs publication of the local tarball and checks its integrity without publishing. Always pass `./release-artifacts/<archive>.tgz` (or an absolute path) to `npm publish`; a bare `release-artifacts/<archive>.tgz` is interpreted as GitHub shorthand. A successful dry run does not prove npm OIDC authorization.
