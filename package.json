@@ -54,19 +54,19 @@
     "node": ">=26"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "cheerio": "^1.2.0",
-    "fast-xml-parser": "^5.2.5",
+    "fast-xml-parser": "^5.11.2",
     "keytar": "^7.9.0",
-    "sharp": "^0.35.4",
-    "tough-cookie": "^6.0.0",
-    "zod": "^4.3.6"
+    "sharp": "^0.35.5",
+    "tough-cookie": "^6.0.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0",
-    "tsx": "^4.20.5",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11",
+    "vitest": "^4.1.12",
     "yaml": "^2.9.1"
   }
 }
