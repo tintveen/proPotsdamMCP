@@ -1,6 +1,6 @@
 {
   "name": "propotsdam-mcp",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Local MCP server for the ProPotsdam customer portal",
   "type": "module",
   "bin": {
