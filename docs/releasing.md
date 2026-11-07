@@ -10,7 +10,7 @@ Before any release tag is pushed, the `npm-release` environment must require `ti
 
 1. Update `package.json`, `package-lock.json`, and the pinned version in `README.md` in one pull request. The CLI and MCP handshake both derive their version from `package.json`.
    Current releases use Node.js `26.13.0` and npm `11.20.0`; keep local release evidence and both release jobs aligned to this exact toolchain.
-   Node.js `26.13.0` is a [security release](https://nodejs.org/en/blog/release/v26.13.0) and [bundles npm `11.20.0`](https://github.com/nodejs/node/blob/v26.13.0/deps/npm/package.json). This updates the release toolchain only; dependency vulnerabilities remain subject to both existing npm audit gates and can still block release readiness.
+   Node.js `26.13.0` is a [LTS release](https://nodejs.org/en/blog/release/v26.13.0) and [bundles npm `11.20.0`](https://github.com/nodejs/node/blob/v26.13.0/deps/npm/package.json). This updates the release toolchain only; dependency vulnerabilities remain subject to both existing npm audit gates and can still block release readiness.
    Use the official Node.js binary, not a rebuilt distribution such as Homebrew: different bundled zlib implementations can produce different archive bytes even with the same Node.js version. For example, run `npm exec --yes --package=node@26.13.0 --package=npm@11.20.0 -- npm run release:check` to match the workflow's packer.
 2. Run `npm ci`, `npm run release:check`, `git diff --check`, and a targeted secret scan.
 3. Inspect `npm pack --json` and confirm the archive contains no source, tests, credentials, traces, or personal data.
